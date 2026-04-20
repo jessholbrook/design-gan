@@ -82,6 +82,18 @@ def list_runs(
 
 
 @app.command()
+def demo(
+    runs_dir: Path = typer.Option(None, help="Where to write demo artifacts."),
+) -> None:
+    """Seed a fake run so the viewer has something to show (no API key needed)."""
+    from . import demo as demo_mod
+
+    runs_dir = runs_dir or _default_runs_dir()
+    run_id = demo_mod.seed_demo(runs_dir)
+    console.print(f"[green]Seeded demo run #{run_id}[/green] in {runs_dir}")
+
+
+@app.command()
 def viewer(
     host: str = typer.Option("127.0.0.1"),
     port: int = typer.Option(8000),

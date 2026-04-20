@@ -8,7 +8,9 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-from playwright.async_api import async_playwright
+# Playwright is a heavy dependency (ships a browser). We import it lazily inside
+# render() so the rest of the package (storage, scorer, viewer) can be used
+# without it installed.
 
 # Pinned to a stable release.
 AXE_CDN = "https://cdnjs.cloudflare.com/ajax/libs/axe-core/4.10.0/axe.min.js"
@@ -29,6 +31,8 @@ class RenderResult:
 
 async def render(html: str, viewport: tuple[int, int] = (1280, 800)) -> RenderResult:
     """Render HTML in headless Chromium and capture screenshot + DOM + a11y report."""
+    from playwright.async_api import async_playwright
+
     console_errors: list[str] = []
 
     async with async_playwright() as p:
