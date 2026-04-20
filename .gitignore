@@ -9,6 +9,7 @@ venv/
 
 # Run artifacts
 runs/
+runs_*/
 *.sqlite
 *.db
 
