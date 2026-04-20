@@ -41,13 +41,18 @@ cp .env.example .env  # add your ANTHROPIC_API_KEY
 ## Usage
 
 ```bash
-# Run one evolution loop
-design-gan run "A landing page for a weekend cycling tour in rural Vermont."
-
-# Browse past runs and iterations
-design-gan list-runs
+# Launch the web UI: kick off runs, watch them live, browse history
 design-gan viewer  # http://127.0.0.1:8000
+
+# Or run one evolution loop from the terminal
+design-gan run "A landing page for a weekend cycling tour in rural Vermont."
+design-gan list-runs
 ```
+
+The viewer renders a dashboard with a run-start form, a live score chart, and
+per-iteration cards (screenshot, SUS breakdown, feedback, suggestions). If
+you start a run from the browser it streams new iterations in via SSE as
+they complete — you can literally watch the site evolve.
 
 ## Design notes
 

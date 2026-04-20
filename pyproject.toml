@@ -24,6 +24,9 @@ design-gan = "design_gan.cli:app"
 [tool.hatch.build.targets.wheel]
 packages = ["src/design_gan"]
 
+[tool.hatch.build.targets.wheel.force-include]
+"src/design_gan/static" = "design_gan/static"
+
 [tool.ruff]
 line-length = 100
 target-version = "py311"

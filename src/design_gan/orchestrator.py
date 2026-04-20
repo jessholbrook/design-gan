@@ -33,11 +33,14 @@ class LoopResult:
     status: str  # "converged" | "exhausted"
 
 
-async def run_loop(cfg: LoopConfig, console: Console | None = None) -> LoopResult:
+async def run_loop(
+    cfg: LoopConfig, console: Console | None = None, run_id: int | None = None
+) -> LoopResult:
     console = console or Console()
     client = anthropic.Anthropic()
     store = storage.Storage(cfg.db_path)
-    run_id = store.create_run(cfg.brief, cfg.model)
+    if run_id is None:
+        run_id = store.create_run(cfg.brief, cfg.model)
     run_dir = cfg.runs_dir / f"run_{run_id:04d}"
     run_dir.mkdir(parents=True, exist_ok=True)
 
@@ -135,5 +138,7 @@ async def run_loop(cfg: LoopConfig, console: Console | None = None) -> LoopResul
     )
 
 
-def run_loop_sync(cfg: LoopConfig, console: Console | None = None) -> LoopResult:
-    return asyncio.run(run_loop(cfg, console))
+def run_loop_sync(
+    cfg: LoopConfig, console: Console | None = None, run_id: int | None = None
+) -> LoopResult:
+    return asyncio.run(run_loop(cfg, console, run_id=run_id))

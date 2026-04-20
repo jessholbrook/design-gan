@@ -123,10 +123,11 @@ class Storage:
             row = c.execute("SELECT * FROM runs WHERE id=?", (run_id,)).fetchone()
             return dict(row) if row else None
 
-    def iterations_for_run(self, run_id: int) -> list[dict[str, Any]]:
+    def iterations_for_run(self, run_id: int, after_iter: int = 0) -> list[dict[str, Any]]:
         with self._conn() as c:
             rows = c.execute(
-                "SELECT * FROM iterations WHERE run_id=? ORDER BY iter ASC", (run_id,)
+                "SELECT * FROM iterations WHERE run_id=? AND iter>? ORDER BY iter ASC",
+                (run_id, after_iter),
             ).fetchall()
             out = []
             for r in rows:
