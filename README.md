@@ -54,6 +54,41 @@ per-iteration cards (screenshot, SUS breakdown, feedback, suggestions). If
 you start a run from the browser it streams new iterations in via SSE as
 they complete — you can literally watch the site evolve.
 
+## Deploy to Fly.io
+
+A `Dockerfile` and `fly.toml` are included. The Dockerfile bakes in Chromium
+plus its Linux deps; runs persist to a mounted volume at `/data`.
+
+One-time setup (from the repo root, with [flyctl](https://fly.io/docs/flyctl/)
+installed and logged in):
+
+```bash
+# Claim an app name — edit fly.toml if the default is taken.
+fly launch --no-deploy --copy-config
+
+# Create the 1GB volume that backs SQLite + runs/ in the same region.
+fly volumes create design_gan_data --size 1 --region iad
+
+# Set your Anthropic key.
+fly secrets set ANTHROPIC_API_KEY=sk-ant-...
+
+# Deploy.
+fly deploy
+```
+
+Once it's up:
+
+```bash
+# Seed the demo run so the dashboard isn't empty.
+fly ssh console -C "design-gan demo"
+
+# Tail logs while you try a real run from the web UI.
+fly logs
+```
+
+If you hit OOM kills during renders, bump `[[vm]] memory = "2gb"` in `fly.toml`
+and `fly deploy` again.
+
 ## Design notes
 
 - **Critic sees the rendered page, not just code.** Code-only critique is
