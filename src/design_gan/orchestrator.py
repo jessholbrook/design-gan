@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import traceback
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -10,6 +11,16 @@ import anthropic
 from rich.console import Console
 
 from . import critic, generator, renderer, scorer, storage
+
+# Phases reported via storage.update_progress so the viewer can display
+# which stage of which iteration is in flight.
+PHASE_GENERATING = "generating"
+PHASE_RENDERING = "rendering"
+PHASE_CRITIQUING = "critiquing"
+
+# Per-API-call timeout. The SDK will retry transient failures; we cap each
+# attempt so one stuck call can't freeze the whole run.
+_API_TIMEOUT_S = 180.0
 
 
 @dataclass
@@ -30,14 +41,14 @@ class LoopResult:
     best_iter: int
     best_score: float
     iterations: int
-    status: str  # "converged" | "exhausted"
+    status: str  # "converged" | "exhausted" | "errored"
 
 
 async def run_loop(
     cfg: LoopConfig, console: Console | None = None, run_id: int | None = None
 ) -> LoopResult:
     console = console or Console()
-    client = anthropic.Anthropic()
+    client = anthropic.Anthropic(timeout=_API_TIMEOUT_S)
     store = storage.Storage(cfg.db_path)
     if run_id is None:
         run_id = store.create_run(cfg.brief, cfg.model)
@@ -52,83 +63,110 @@ async def run_loop(
     prev_suggestions: list[str] | None = None
 
     status = "exhausted"
+    final_error: str | None = None
     i = 0
 
-    for i in range(1, cfg.max_iters + 1):
-        console.rule(f"[bold cyan]Run {run_id} iter {i}/{cfg.max_iters}")
+    try:
+        for i in range(1, cfg.max_iters + 1):
+            console.rule(f"[bold cyan]Run {run_id} iter {i}/{cfg.max_iters}")
 
-        console.print("[dim]generating...[/dim]")
-        html = generator.generate(
-            client,
-            cfg.model,
-            generator.GenerationRequest(
-                brief=cfg.brief,
-                prior_html=prev_html,
-                critic_feedback=prev_feedback,
-                suggestions=prev_suggestions,
-            ),
-        )
+            try:
+                # --- generate -----------------------------------------------
+                store.update_progress(run_id, i, PHASE_GENERATING)
+                console.print("[dim]generating...[/dim]")
+                html = generator.generate(
+                    client,
+                    cfg.model,
+                    generator.GenerationRequest(
+                        brief=cfg.brief,
+                        prior_html=prev_html,
+                        critic_feedback=prev_feedback,
+                        suggestions=prev_suggestions,
+                    ),
+                )
 
-        iter_dir = run_dir / f"iter_{i:03d}"
-        iter_dir.mkdir(parents=True, exist_ok=True)
-        (iter_dir / "site.html").write_text(html, encoding="utf-8")
+                iter_dir = run_dir / f"iter_{i:03d}"
+                iter_dir.mkdir(parents=True, exist_ok=True)
+                (iter_dir / "site.html").write_text(html, encoding="utf-8")
 
-        console.print("[dim]rendering...[/dim]")
-        render = await renderer.render(html, viewport=cfg.viewport)
-        renderer.write_artifacts(render, iter_dir)
+                # --- render -------------------------------------------------
+                store.update_progress(run_id, i, PHASE_RENDERING)
+                console.print("[dim]rendering...[/dim]")
+                render = await renderer.render(html, viewport=cfg.viewport)
+                renderer.write_artifacts(render, iter_dir)
 
-        console.print("[dim]critiquing...[/dim]")
-        sus = critic.critique(
-            client,
-            cfg.model,
-            screenshot_png=render.screenshot_png,
-            dom_html=render.dom_html,
-            axe_violations=render.axe_violations,
-            brief=cfg.brief,
-        )
+                # --- critique ----------------------------------------------
+                store.update_progress(run_id, i, PHASE_CRITIQUING)
+                console.print("[dim]critiquing...[/dim]")
+                sus = critic.critique(
+                    client,
+                    cfg.model,
+                    screenshot_png=render.screenshot_png,
+                    dom_html=render.dom_html,
+                    axe_violations=render.axe_violations,
+                    brief=cfg.brief,
+                )
 
-        result = scorer.score(list(sus.sus), render.axe_violations)
-        store.save_iteration(
-            storage.IterationRecord(
-                run_id=run_id,
-                iter=i,
-                html=html,
-                sus_score=result.sus,
-                axe_penalty=result.axe_penalty,
-                composite_score=result.composite,
-                sus_answers=list(sus.sus),
-                feedback=sus.feedback,
-                suggestions=sus.suggestions,
-                artifacts_dir=str(iter_dir),
-            )
-        )
+                result = scorer.score(list(sus.sus), render.axe_violations)
+                store.save_iteration(
+                    storage.IterationRecord(
+                        run_id=run_id,
+                        iter=i,
+                        html=html,
+                        sus_score=result.sus,
+                        axe_penalty=result.axe_penalty,
+                        composite_score=result.composite,
+                        sus_answers=list(sus.sus),
+                        feedback=sus.feedback,
+                        suggestions=sus.suggestions,
+                        artifacts_dir=str(iter_dir),
+                    )
+                )
+            except Exception as e:
+                # A single bad iteration shouldn't kill the whole run. Log it,
+                # count it as "no progress", and let the patience rule decide.
+                console.print(f"[red]iter {i} failed: {e}[/red]")
+                console.print(traceback.format_exc())
+                stale += 1
+                if stale >= cfg.patience:
+                    status = "errored"
+                    final_error = f"iter {i}: {e}"
+                    break
+                continue
 
-        console.print(
-            f"[bold]score[/bold]: SUS={result.sus:.1f}  "
-            f"a11y_penalty={result.axe_penalty:.1f}  "
-            f"[green]composite={result.composite:.1f}[/green]"
-        )
-        console.print(f"[dim]feedback:[/dim] {sus.feedback}")
-
-        if result.composite > best_score + cfg.tolerance:
-            best_score = result.composite
-            best_iter = i
-            stale = 0
-        else:
-            stale += 1
-
-        if stale >= cfg.patience:
-            status = "converged"
             console.print(
-                f"[yellow]No improvement over {cfg.patience} iters — stopping.[/yellow]"
+                f"[bold]score[/bold]: SUS={result.sus:.1f}  "
+                f"a11y_penalty={result.axe_penalty:.1f}  "
+                f"[green]composite={result.composite:.1f}[/green]"
             )
-            break
+            console.print(f"[dim]feedback:[/dim] {sus.feedback}")
 
-        prev_html = html
-        prev_feedback = sus.feedback
-        prev_suggestions = sus.suggestions
+            if result.composite > best_score + cfg.tolerance:
+                best_score = result.composite
+                best_iter = i
+                stale = 0
+            else:
+                stale += 1
 
-    store.finish_run(run_id, best_iter, best_score, status)
+            if stale >= cfg.patience:
+                status = "converged"
+                console.print(
+                    f"[yellow]No improvement over {cfg.patience} iters — stopping.[/yellow]"
+                )
+                break
+
+            prev_html = html
+            prev_feedback = sus.feedback
+            prev_suggestions = sus.suggestions
+    except Exception as e:
+        # Truly unexpected failure — still mark the run so it doesn't hang.
+        status = "errored"
+        final_error = str(e)
+        console.print(f"[red]run errored: {e}[/red]")
+        console.print(traceback.format_exc())
+    finally:
+        store.finish_run(run_id, best_iter, best_score, status, error=final_error)
+
     return LoopResult(
         run_id=run_id,
         best_iter=best_iter,

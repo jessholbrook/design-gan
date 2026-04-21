@@ -136,6 +136,20 @@
 
   if (document.body.dataset.running !== '1') return;
 
+  // Live progress indicator helpers.
+  const progressEl = document.getElementById('progress-indicator');
+  const progressText = document.getElementById('progress-text');
+  function setProgress(iter, phase) {
+    if (!progressEl) return;
+    if (iter && phase) {
+      progressEl.style.display = 'inline-flex';
+      progressText.textContent = `iter ${iter} · ${phase}`;
+    } else {
+      progressEl.style.display = 'none';
+      progressText.textContent = '';
+    }
+  }
+
   // Live updates via SSE — tell the server where we already are.
   const since = iters.length ? iters[iters.length - 1].iter : 0;
   const es = new EventSource(`/runs/${runId}/stream?since=${since}`);
@@ -149,6 +163,10 @@
     renderChart(iters);
     updateSummary(iters);
   });
+  es.addEventListener('phase', (e) => {
+    const { iter, phase } = JSON.parse(e.data);
+    setProgress(iter, phase);
+  });
   es.addEventListener('done', (e) => {
     const { run } = JSON.parse(e.data);
     const badge = document.querySelector('h1 .status');
@@ -156,6 +174,7 @@
       badge.className = `status status-${run.status}`;
       badge.textContent = run.status;
     }
+    setProgress(null, null);
     es.close();
   });
   es.addEventListener('error', () => {

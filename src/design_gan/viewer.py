@@ -66,9 +66,12 @@ def _score_class(score: float | None) -> str:
 
 
 def _status_badge(status: str) -> str:
-    cls = {"running": "running", "converged": "converged", "exhausted": "exhausted"}.get(
-        status, "unknown"
-    )
+    cls = {
+        "running": "running",
+        "converged": "converged",
+        "exhausted": "exhausted",
+        "errored": "errored",
+    }.get(status, "unknown")
     return f'<span class="status status-{cls}">{html.escape(status)}</span>'
 
 
@@ -184,9 +187,22 @@ def run_detail(run_id: int) -> str:
     best_score_txt = f"{best_score:.0f}" if best_score is not None else "—"
     cards = "".join(_iter_card_html(run_id, it) for it in iters)
 
+    running = run["status"] == "running"
     attrs = (
-        f' data-run-id="{run_id}" data-running="{"1" if run["status"] == "running" else "0"}"'
+        f' data-run-id="{run_id}" data-running="{"1" if running else "0"}"'
         f' data-last-iter="{iters[-1]["iter"] if iters else 0}"'
+        f' data-max-iters="{run.get("max_iters") or ""}"'
+    )
+    cur_iter = run.get("current_iter")
+    cur_phase = run.get("current_phase")
+    progress_display = "flex" if running and cur_phase else "none"
+    progress_text = (
+        f"iter {cur_iter} · {cur_phase}" if (running and cur_iter and cur_phase) else ""
+    )
+    error_html = (
+        f'<p class="run-error">Last error: {html.escape(run["error"])}</p>'
+        if run.get("error")
+        else ""
     )
 
     body = f"""<main class="layout">
@@ -194,7 +210,12 @@ def run_detail(run_id: int) -> str:
   <section class="content">
     <section class="card run-header">
       <div class="run-header-top">
-        <h1>Run #{run_id} {_status_badge(run['status'])}</h1>
+        <h1>Run #{run_id} {_status_badge(run['status'])}
+          <span id="progress-indicator" class="progress" style="display:{progress_display}">
+            <span class="spinner"></span>
+            <span id="progress-text">{html.escape(progress_text)}</span>
+          </span>
+        </h1>
         <div class="run-stats">
           <div><span class="muted">best iter</span>
             <b id="stat-best-iter">{run.get('best_iter') or '—'}</b></div>
@@ -205,6 +226,7 @@ def run_detail(run_id: int) -> str:
         </div>
       </div>
       <p class="brief">{html.escape(run['brief'])}</p>
+      {error_html}
       <div class="chart-wrap">
         <svg id="score-chart" viewBox="0 0 800 220" preserveAspectRatio="none"></svg>
       </div>
@@ -293,10 +315,11 @@ async def start_run(req: StartRunRequest) -> JSONResponse:
 
 @app.get("/runs/{run_id}/stream")
 async def stream_run(run_id: int, since: int = 0) -> StreamingResponse:
-    """Server-Sent Events: push newly-completed iterations to the browser."""
+    """Server-Sent Events: push newly-completed iterations and phase changes."""
 
     async def event_source():
         last_iter = since
+        last_phase_key: tuple[int | None, str | None] | None = None
         # Short keep-alive loop; stop once the run has a terminal status.
         while True:
             store = _store()
@@ -304,10 +327,19 @@ async def stream_run(run_id: int, since: int = 0) -> StreamingResponse:
             if not run:
                 yield _sse("error", {"message": "run not found"})
                 return
+            # Newly completed iterations.
             new = store.iterations_for_run(run_id, after_iter=last_iter)
             for it in new:
                 yield _sse("iteration", {"run_id": run_id, "iter": it})
                 last_iter = it["iter"]
+            # Phase transitions (generating / rendering / critiquing / None).
+            phase_key = (run.get("current_iter"), run.get("current_phase"))
+            if phase_key != last_phase_key:
+                yield _sse(
+                    "phase",
+                    {"iter": phase_key[0], "phase": phase_key[1]},
+                )
+                last_phase_key = phase_key
             if run["status"] != "running":
                 yield _sse("done", {"run": run})
                 return

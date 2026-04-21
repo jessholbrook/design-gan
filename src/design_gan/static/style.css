@@ -186,8 +186,44 @@ a:hover { text-decoration: underline; }
   animation: pulse 1.5s infinite;
 }
 .status-converged { background: #d1fae5; color: #065f46; }
-.status-exhausted { background: #fee2e2; color: #991b1b; }
+.status-exhausted { background: #e5e7eb; color: #374151; }
+.status-errored { background: #fee2e2; color: #991b1b; }
 .status-unknown { background: #e5e7eb; color: #374151; }
+
+/* Live progress indicator: "iter 3 · rendering" with a spinner. */
+.progress {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 10px;
+  background: #eff6ff;
+  color: var(--accent);
+  border-radius: 999px;
+  font-size: 12px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+.progress .spinner {
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  border: 2px solid var(--accent);
+  border-right-color: transparent;
+  animation: spin 0.8s linear infinite;
+}
+@keyframes spin {
+  to { transform: rotate(360deg); }
+}
+
+.run-error {
+  padding: 10px 12px;
+  background: #fef2f2;
+  border: 1px solid #fecaca;
+  color: #991b1b;
+  border-radius: 6px;
+  font-size: 13px;
+  margin: 0 0 16px;
+}
 
 @keyframes pulse {
   0%, 100% { opacity: 1; }

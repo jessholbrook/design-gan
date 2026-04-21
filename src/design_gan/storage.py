@@ -19,7 +19,10 @@ CREATE TABLE IF NOT EXISTS runs (
     ended_at REAL,
     best_iter INTEGER,
     best_score REAL,
-    status TEXT NOT NULL DEFAULT 'running'
+    status TEXT NOT NULL DEFAULT 'running',
+    current_iter INTEGER,
+    current_phase TEXT,
+    error TEXT
 );
 
 CREATE TABLE IF NOT EXISTS iterations (
@@ -62,6 +65,18 @@ class Storage:
         db_path.parent.mkdir(parents=True, exist_ok=True)
         with self._conn() as c:
             c.executescript(SCHEMA)
+            self._migrate(c)
+
+    @staticmethod
+    def _migrate(conn: sqlite3.Connection) -> None:
+        """Add columns added to an existing deployment."""
+        cols = {row["name"] for row in conn.execute("PRAGMA table_info(runs)")}
+        if "current_iter" not in cols:
+            conn.execute("ALTER TABLE runs ADD COLUMN current_iter INTEGER")
+        if "current_phase" not in cols:
+            conn.execute("ALTER TABLE runs ADD COLUMN current_phase TEXT")
+        if "error" not in cols:
+            conn.execute("ALTER TABLE runs ADD COLUMN error TEXT")
 
     @contextmanager
     def _conn(self) -> Iterator[sqlite3.Connection]:
@@ -81,11 +96,29 @@ class Storage:
             )
             return cur.lastrowid
 
-    def finish_run(self, run_id: int, best_iter: int, best_score: float, status: str) -> None:
+    def finish_run(
+        self,
+        run_id: int,
+        best_iter: int,
+        best_score: float,
+        status: str,
+        error: str | None = None,
+    ) -> None:
         with self._conn() as c:
             c.execute(
-                "UPDATE runs SET ended_at=?, best_iter=?, best_score=?, status=? WHERE id=?",
-                (time.time(), best_iter, best_score, status, run_id),
+                "UPDATE runs SET ended_at=?, best_iter=?, best_score=?, status=?, "
+                "current_iter=NULL, current_phase=NULL, error=? WHERE id=?",
+                (time.time(), best_iter, best_score, status, error, run_id),
+            )
+
+    def update_progress(
+        self, run_id: int, current_iter: int | None, current_phase: str | None
+    ) -> None:
+        """Set the in-flight iteration/phase so the viewer can report live progress."""
+        with self._conn() as c:
+            c.execute(
+                "UPDATE runs SET current_iter=?, current_phase=? WHERE id=?",
+                (current_iter, current_phase, run_id),
             )
 
     def save_iteration(self, rec: IterationRecord) -> None:
