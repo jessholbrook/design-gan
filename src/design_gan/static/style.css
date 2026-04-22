@@ -138,6 +138,17 @@ a:hover { text-decoration: underline; }
 .new-run button:hover { filter: brightness(0.95); }
 .new-run button:disabled { opacity: 0.6; cursor: wait; }
 
+/* Token gate on gated deployments. */
+.new-run .gated-note {
+  margin: -4px 0 0;
+  padding: 10px 12px;
+  background: #fef3c7;
+  color: #92400e;
+  border-radius: 6px;
+  font-size: 13px;
+}
+.new-run .token-field input { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
+
 /* Recent runs grid */
 .run-grid {
   display: grid;

@@ -3,12 +3,13 @@
 from __future__ import annotations
 
 import asyncio
+import hmac
 import html
 import json
 import os
 from pathlib import Path
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, Header, HTTPException
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, StreamingResponse
 from pydantic import BaseModel, Field
 
@@ -21,6 +22,12 @@ def _runs_dir() -> Path:
 
 def _default_model() -> str:
     return os.environ.get("DESIGN_GAN_MODEL", "claude-sonnet-4-6")
+
+
+def _required_start_token() -> str | None:
+    """If set, POST /api/runs must present this token. Unset -> gate disabled."""
+    tok = os.environ.get("DESIGN_GAN_START_TOKEN")
+    return tok if tok else None
 
 
 def _store() -> storage.Storage:
@@ -95,9 +102,23 @@ def _runs_sidebar(active_id: int | None) -> str:
 
 
 def _new_run_form() -> str:
+    gated = _required_start_token() is not None
+    gated_attr = ' data-requires-token="1"' if gated else ""
+    token_field = (
+        '<label class="token-field">Access token'
+        '<input type="password" name="token" autocomplete="off" '
+        'placeholder="Required to start a run on this deployment" /></label>'
+        if gated else ""
+    )
+    gated_note = (
+        '<p class="muted gated-note">Starting a run requires a shared token '
+        'on this deployment — ask the owner. Browsing existing runs is open.</p>'
+        if gated else ""
+    )
     return f"""<section class="card new-run">
   <h2>Start a new run</h2>
-  <form id="new-run-form">
+  {gated_note}
+  <form id="new-run-form"{gated_attr}>
     <label>Brief
       <textarea name="brief" rows="3" required
         placeholder="A landing page for a weekend cycling tour in rural Vermont."></textarea>
@@ -108,6 +129,7 @@ def _new_run_form() -> str:
       <label>Tolerance<input type="number" name="tolerance" value="1.0" step="0.5" min="0" /></label>
       <label>Model<input type="text" name="model" value="{html.escape(_default_model())}" /></label>
     </div>
+    {token_field}
     <button type="submit">Run</button>
     <span id="new-run-status" class="muted"></span>
   </form>
@@ -297,10 +319,32 @@ class StartRunRequest(BaseModel):
     patience: int = Field(default=3, ge=1, le=20)
     tolerance: float = Field(default=1.0, ge=0.0, le=100.0)
     model: str | None = None
+    token: str | None = None  # required iff DESIGN_GAN_START_TOKEN is set
+
+
+def _check_start_token(req: StartRunRequest, authorization: str | None) -> None:
+    """Enforce DESIGN_GAN_START_TOKEN if set. Accept body.token or `Authorization: Bearer`."""
+    required = _required_start_token()
+    if not required:
+        return
+    provided = req.token
+    if not provided and authorization and authorization.lower().startswith("bearer "):
+        provided = authorization.split(" ", 1)[1].strip()
+    if not provided or not hmac.compare_digest(provided, required):
+        raise HTTPException(status_code=401, detail="invalid or missing token")
+
+
+@app.get("/api/config")
+def api_config() -> JSONResponse:
+    """Lets the UI know whether to show the token field without exposing the token."""
+    return JSONResponse({"requires_token": _required_start_token() is not None})
 
 
 @app.post("/api/runs")
-async def start_run(req: StartRunRequest) -> JSONResponse:
+async def start_run(
+    req: StartRunRequest, authorization: str | None = Header(default=None)
+) -> JSONResponse:
+    _check_start_token(req, authorization)
     runs_dir = _runs_dir()
     model = req.model or _default_model()
     cfg = orchestrator.LoopConfig(

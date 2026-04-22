@@ -6,6 +6,16 @@
       "runtimeExecutable": "python3",
       "runtimeArgs": ["-m", "http.server", "4173", "--directory", "docs"],
       "port": 4173
+    },
+    {
+      "name": "viewer-gated",
+      "runtimeExecutable": ".venv/bin/python",
+      "runtimeArgs": ["-m", "uvicorn", "design_gan.viewer:app", "--host", "127.0.0.1", "--port", "8765"],
+      "port": 8765,
+      "env": {
+        "DESIGN_GAN_RUNS_DIR": "/tmp/design-gan-preview",
+        "DESIGN_GAN_START_TOKEN": "local-preview-token"
+      }
     }
   ]
 }

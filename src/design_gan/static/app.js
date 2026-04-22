@@ -1,8 +1,17 @@
 // New-run form: POST /api/runs, then redirect to the new run detail page.
+// When the server gates runs with DESIGN_GAN_START_TOKEN, the form carries
+// a token field; we cache the value in localStorage so returning visitors
+// don't have to paste it every time.
 (() => {
   const form = document.getElementById('new-run-form');
   if (!form) return;
   const status = document.getElementById('new-run-status');
+  const TOKEN_KEY = 'design_gan_start_token';
+  const tokenInput = form.querySelector('input[name="token"]');
+  if (tokenInput) {
+    const cached = localStorage.getItem(TOKEN_KEY);
+    if (cached) tokenInput.value = cached;
+  }
   form.addEventListener('submit', async (e) => {
     e.preventDefault();
     const fd = new FormData(form);
@@ -13,6 +22,11 @@
       tolerance: Number(fd.get('tolerance')),
       model: fd.get('model') || null,
     };
+    const token = fd.get('token');
+    if (token) {
+      body.token = token;
+      localStorage.setItem(TOKEN_KEY, token);
+    }
     const btn = form.querySelector('button');
     btn.disabled = true;
     status.textContent = 'starting…';
@@ -22,7 +36,13 @@
         headers: { 'content-type': 'application/json' },
         body: JSON.stringify(body),
       });
-      if (!res.ok) throw new Error(await res.text());
+      if (!res.ok) {
+        if (res.status === 401) {
+          localStorage.removeItem(TOKEN_KEY);
+          throw new Error('invalid or missing access token');
+        }
+        throw new Error(await res.text());
+      }
       const { run_id } = await res.json();
       window.location.href = `/runs/${run_id}`;
     } catch (err) {

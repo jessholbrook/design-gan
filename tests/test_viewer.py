@@ -145,6 +145,78 @@ class TestStartRunValidation:
         assert r.status_code == 422
 
 
+class TestStartTokenGate:
+    """When DESIGN_GAN_START_TOKEN is set, /api/runs rejects unauthenticated POSTs."""
+
+    @pytest.fixture
+    def gated_client(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> TestClient:
+        monkeypatch.setenv("DESIGN_GAN_RUNS_DIR", str(tmp_path))
+        monkeypatch.setenv("DESIGN_GAN_START_TOKEN", "s3cret")
+        from design_gan import viewer
+
+        seed_demo(tmp_path)
+        return TestClient(viewer.app)
+
+    def test_config_reports_gate(self, gated_client: TestClient):
+        r = gated_client.get("/api/config")
+        assert r.status_code == 200
+        assert r.json() == {"requires_token": True}
+
+    def test_config_reports_no_gate_by_default(self, client: TestClient):
+        r = client.get("/api/config")
+        assert r.json() == {"requires_token": False}
+
+    def test_missing_token_rejected(self, gated_client: TestClient):
+        r = gated_client.post("/api/runs", json={"brief": "x"})
+        assert r.status_code == 401
+
+    def test_wrong_token_rejected(self, gated_client: TestClient):
+        r = gated_client.post(
+            "/api/runs", json={"brief": "x", "token": "nope"}
+        )
+        assert r.status_code == 401
+
+    def test_correct_body_token_accepted(
+        self, gated_client: TestClient, monkeypatch: pytest.MonkeyPatch
+    ):
+        # Prevent the orchestrator from actually being called.
+        from design_gan import orchestrator
+        monkeypatch.setattr(orchestrator, "run_loop_sync", lambda *a, **kw: None)
+        r = gated_client.post(
+            "/api/runs", json={"brief": "x", "token": "s3cret"}
+        )
+        assert r.status_code == 200
+        assert "run_id" in r.json()
+
+    def test_bearer_header_accepted(
+        self, gated_client: TestClient, monkeypatch: pytest.MonkeyPatch
+    ):
+        from design_gan import orchestrator
+        monkeypatch.setattr(orchestrator, "run_loop_sync", lambda *a, **kw: None)
+        r = gated_client.post(
+            "/api/runs",
+            json={"brief": "x"},
+            headers={"Authorization": "Bearer s3cret"},
+        )
+        assert r.status_code == 200
+
+    def test_form_shows_token_field_when_gated(self, gated_client: TestClient):
+        r = gated_client.get("/")
+        assert 'name="token"' in r.text
+        assert "requires a shared token" in r.text
+
+    def test_form_hides_token_field_by_default(self, client: TestClient):
+        r = client.get("/")
+        assert 'name="token"' not in r.text
+
+    def test_browsing_history_still_open_when_gated(self, gated_client: TestClient):
+        assert gated_client.get("/").status_code == 200
+        assert gated_client.get("/api/runs").status_code == 200
+        assert gated_client.get("/runs/1").status_code == 200
+
+
 class TestErroredRunDisplay:
     """A run that never completed an iteration shows '—' for best-score, not -1."""
 
