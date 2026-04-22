@@ -92,18 +92,10 @@ and `fly deploy` again.
 ## Static showcase
 
 A self-contained explainer page lives in [`docs/index.html`](docs/index.html) —
-single file, no JS framework, all screenshots inlined as base64. It's the fastest
-way to show someone what design-gan does without giving them an API key.
-
-```bash
-pip install -e .
-python scripts/build_site.py   # regenerates docs/index.html from the seed run
-```
-
-To publish: on GitHub, go to **Settings → Pages**, choose **Deploy from a branch**,
-branch `main`, folder `/docs`. The site will be live at
-`https://<you>.github.io/design-gan/`. Or point Vercel/Netlify at the `docs/`
-directory.
+single file, no JS framework, all screenshots inlined as base64. Hand-edit the
+file directly; commit; GitHub Pages publishes in a minute at
+`https://<you>.github.io/design-gan/`. On GitHub, enable it under
+**Settings → Pages → Deploy from branch → `main` / `/docs`**.
 
 ## Tests
 
