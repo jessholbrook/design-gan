@@ -34,7 +34,11 @@ def run(
     runs_dir: Path = typer.Option(None, help="Where to store per-iteration artifacts."),
 ) -> None:
     """Run one evolution loop for BRIEF until the score plateaus."""
-    load_dotenv()
+    load_dotenv(override=True)
+    # The Agent SDK routes through Claude Code OAuth (Max plan) when no API key
+    # is set. An empty string still counts as "set" for some clients, so clear it.
+    if not os.environ.get("ANTHROPIC_API_KEY"):
+        os.environ.pop("ANTHROPIC_API_KEY", None)
     runs_dir = runs_dir or _default_runs_dir()
     cfg = orchestrator.LoopConfig(
         brief=brief,
@@ -59,7 +63,11 @@ def list_runs(
     runs_dir: Path = typer.Option(None, help="Runs directory containing the sqlite db."),
 ) -> None:
     """List prior runs stored in the sqlite db."""
-    load_dotenv()
+    load_dotenv(override=True)
+    # The Agent SDK routes through Claude Code OAuth (Max plan) when no API key
+    # is set. An empty string still counts as "set" for some clients, so clear it.
+    if not os.environ.get("ANTHROPIC_API_KEY"):
+        os.environ.pop("ANTHROPIC_API_KEY", None)
     runs_dir = runs_dir or _default_runs_dir()
     store = storage.Storage(runs_dir / "design-gan.sqlite")
     rows = store.list_runs()
@@ -102,7 +110,11 @@ def viewer(
     """Launch the FastAPI viewer to browse iterations."""
     import uvicorn
 
-    load_dotenv()
+    load_dotenv(override=True)
+    # The Agent SDK routes through Claude Code OAuth (Max plan) when no API key
+    # is set. An empty string still counts as "set" for some clients, so clear it.
+    if not os.environ.get("ANTHROPIC_API_KEY"):
+        os.environ.pop("ANTHROPIC_API_KEY", None)
     runs_dir = runs_dir or _default_runs_dir()
     os.environ["DESIGN_GAN_RUNS_DIR"] = str(runs_dir)
     uvicorn.run("design_gan.viewer:app", host=host, port=port, reload=False)

@@ -7,7 +7,6 @@ import traceback
 from dataclasses import dataclass
 from pathlib import Path
 
-import anthropic
 from rich.console import Console
 
 from . import critic, generator, renderer, scorer, storage
@@ -17,10 +16,6 @@ from . import critic, generator, renderer, scorer, storage
 PHASE_GENERATING = "generating"
 PHASE_RENDERING = "rendering"
 PHASE_CRITIQUING = "critiquing"
-
-# Per-API-call timeout. The SDK will retry transient failures; we cap each
-# attempt so one stuck call can't freeze the whole run.
-_API_TIMEOUT_S = 180.0
 
 
 @dataclass
@@ -48,7 +43,6 @@ async def run_loop(
     cfg: LoopConfig, console: Console | None = None, run_id: int | None = None
 ) -> LoopResult:
     console = console or Console()
-    client = anthropic.Anthropic(timeout=_API_TIMEOUT_S)
     store = storage.Storage(cfg.db_path)
     if run_id is None:
         run_id = store.create_run(cfg.brief, cfg.model)
@@ -74,8 +68,7 @@ async def run_loop(
                 # --- generate -----------------------------------------------
                 store.update_progress(run_id, i, PHASE_GENERATING)
                 console.print("[dim]generating...[/dim]")
-                html = generator.generate(
-                    client,
+                html = await generator.generate(
                     cfg.model,
                     generator.GenerationRequest(
                         brief=cfg.brief,
@@ -93,15 +86,14 @@ async def run_loop(
                 store.update_progress(run_id, i, PHASE_RENDERING)
                 console.print("[dim]rendering...[/dim]")
                 render = await renderer.render(html, viewport=cfg.viewport)
-                renderer.write_artifacts(render, iter_dir)
+                artifacts = renderer.write_artifacts(render, iter_dir)
 
                 # --- critique ----------------------------------------------
                 store.update_progress(run_id, i, PHASE_CRITIQUING)
                 console.print("[dim]critiquing...[/dim]")
-                sus = critic.critique(
-                    client,
+                sus = await critic.critique(
                     cfg.model,
-                    screenshot_png=render.screenshot_png,
+                    screenshot_path=artifacts["screenshot"].resolve(),
                     dom_html=render.dom_html,
                     axe_violations=render.axe_violations,
                     brief=cfg.brief,

@@ -9,7 +9,7 @@ description = "Autoresearch-style dual-agent loop that evolves single-page websi
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
-    "anthropic>=0.92.0",
+    "claude-agent-sdk>=0.1.64",
     "playwright>=1.48.0",
     "fastapi>=0.115.0",
     "uvicorn>=0.32.0",

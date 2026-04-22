@@ -2,10 +2,13 @@
 
 from __future__ import annotations
 
+import json
+import re
+from pathlib import Path
 from typing import Annotated, Any
 
-import anthropic
-from pydantic import BaseModel, Field
+from claude_agent_sdk import ClaudeAgentOptions, ResultMessage, query
+from pydantic import BaseModel, Field, ValidationError
 
 # SUS items. Odd items are positive, even items are negative — see scorer.py.
 SUS_ITEMS = [
@@ -41,8 +44,8 @@ class SUSResponse(BaseModel):
 
 CRITIC_SYSTEM = """You are a UX researcher scoring a website on the System Usability Scale.
 
-You will be shown:
-- A rendered screenshot of the site.
+You will be given:
+- The path to a rendered screenshot of the site. Use the Read tool to view it.
 - A DOM snapshot (may be truncated).
 - An axe-core accessibility report summary.
 
@@ -52,9 +55,31 @@ Score the site as an experienced user would, using the SUS questionnaire. Each i
 Be honest and calibrated. Do not be generous. Most unimproved sites should score well below 70. A
 score of 85+ is reserved for sites that would pass a real usability study.
 
-After scoring, write 2-4 sentences of overall feedback and list 3-6 concrete, prioritized
-suggestions the generator should act on in its next revision.
+Output contract:
+- Return ONLY one fenced JSON code block: ```json { ... } ```
+- No prose before or after the block.
+- JSON schema:
+  {
+    "sus": [int,int,int,int,int,int,int,int,int,int],   // ten 1-5 Likert answers in order
+    "feedback": "2-4 sentence overall assessment",
+    "suggestions": ["concrete suggestion 1", "suggestion 2", ...]  // 3-6 items
+  }
 """
+
+
+_JSON_BLOCK = re.compile(r"```(?:json)?\s*(\{.*?\})\s*```", re.DOTALL | re.IGNORECASE)
+
+
+def _extract_json(text: str) -> str:
+    match = _JSON_BLOCK.search(text)
+    if match:
+        return match.group(1)
+    # Fallback: find the outermost braces.
+    start = text.find("{")
+    end = text.rfind("}")
+    if start != -1 and end != -1 and end > start:
+        return text[start : end + 1]
+    raise ValueError("No JSON object found in critic response.")
 
 
 def _truncate(text: str, limit: int) -> str:
@@ -76,56 +101,66 @@ def _summarize_axe(violations: list[dict[str, Any]]) -> str:
     return "\n".join(lines)
 
 
-def critique(
-    client: anthropic.Anthropic,
-    model: str,
-    screenshot_png: bytes,
+def _build_user_message(
+    screenshot_path: Path,
     dom_html: str,
     axe_violations: list[dict[str, Any]],
     brief: str,
-) -> SUSResponse:
-    """Run the critic against a rendered site; returns structured SUS response."""
-    import base64
-
-    screenshot_b64 = base64.standard_b64encode(screenshot_png).decode("ascii")
+) -> str:
     items_block = "\n".join(f"{i + 1}. {item}" for i, item in enumerate(SUS_ITEMS))
-
-    user_text = (
+    return (
         f"Brief the site was built for: {brief}\n\n"
+        f"Screenshot: {screenshot_path}\n"
+        f"Read that PNG with the Read tool before scoring.\n\n"
         f"SUS items (answer each 1-5 in order):\n{items_block}\n\n"
         f"{_summarize_axe(axe_violations)}\n\n"
         f"DOM snapshot:\n```html\n{_truncate(dom_html, 12000)}\n```"
     )
 
-    response = client.messages.parse(
-        model=model,
-        max_tokens=4000,
-        system=[
-            {
-                "type": "text",
-                "text": CRITIC_SYSTEM,
-                "cache_control": {"type": "ephemeral"},
-            }
-        ],
-        messages=[
-            {
-                "role": "user",
-                "content": [
-                    {
-                        "type": "image",
-                        "source": {
-                            "type": "base64",
-                            "media_type": "image/png",
-                            "data": screenshot_b64,
-                        },
-                    },
-                    {"type": "text", "text": user_text},
-                ],
-            }
-        ],
-        output_format=SUSResponse,
-    )
-    parsed = response.parsed_output
-    if parsed is None:
-        raise RuntimeError("Critic failed to return a valid SUS response.")
-    return parsed
+
+async def _run_once(model: str, user_message: str) -> str:
+    final: str | None = None
+    async for msg in query(
+        prompt=user_message,
+        options=ClaudeAgentOptions(
+            system_prompt=CRITIC_SYSTEM,
+            model=model,
+            allowed_tools=["Read"],
+            permission_mode="bypassPermissions",
+        ),
+    ):
+        if isinstance(msg, ResultMessage):
+            if msg.is_error:
+                raise RuntimeError(f"Critic run failed: {msg.result!r}")
+            final = msg.result
+    if not final:
+        raise RuntimeError("Critic produced no result.")
+    return final
+
+
+async def critique(
+    model: str,
+    screenshot_path: Path,
+    dom_html: str,
+    axe_violations: list[dict[str, Any]],
+    brief: str,
+) -> SUSResponse:
+    """Run the critic against a rendered site; returns structured SUS response."""
+    user_message = _build_user_message(screenshot_path, dom_html, axe_violations, brief)
+
+    last_error: Exception | None = None
+    for attempt in range(2):
+        raw = await _run_once(model, user_message)
+        try:
+            payload = _extract_json(raw)
+            return SUSResponse.model_validate_json(payload)
+        except (ValueError, ValidationError, json.JSONDecodeError) as e:
+            last_error = e
+            # On retry, nudge the model toward strict JSON.
+            user_message = (
+                _build_user_message(screenshot_path, dom_html, axe_violations, brief)
+                + "\n\nIMPORTANT: Your previous response was not valid JSON matching the schema. "
+                "Return ONLY a single ```json ... ``` block now."
+            )
+
+    raise RuntimeError(f"Critic failed to return valid JSON after 2 attempts: {last_error}")

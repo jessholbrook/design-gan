@@ -5,7 +5,7 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass
 
-import anthropic
+from claude_agent_sdk import ClaudeAgentOptions, ResultMessage, query
 
 GENERATOR_SYSTEM = """You are a senior front-end designer generating single-page websites.
 
@@ -55,23 +55,24 @@ def _extract_html(text: str) -> str:
     match = _HTML_BLOCK.search(text)
     if match:
         return match.group(1).strip()
-    # Fallback: if no fence, assume the whole thing is HTML.
     return text.strip()
 
 
-def generate(client: anthropic.Anthropic, model: str, req: GenerationRequest) -> str:
+async def generate(model: str, req: GenerationRequest) -> str:
     """Generate a single-page site. Returns raw HTML."""
-    response = client.messages.create(
-        model=model,
-        max_tokens=16000,
-        system=[
-            {
-                "type": "text",
-                "text": GENERATOR_SYSTEM,
-                "cache_control": {"type": "ephemeral"},
-            }
-        ],
-        messages=[{"role": "user", "content": _build_user_message(req)}],
-    )
-    text = next((b.text for b in response.content if b.type == "text"), "")
-    return _extract_html(text)
+    final: str | None = None
+    async for msg in query(
+        prompt=_build_user_message(req),
+        options=ClaudeAgentOptions(
+            system_prompt=GENERATOR_SYSTEM,
+            model=model,
+            tools=[],
+        ),
+    ):
+        if isinstance(msg, ResultMessage):
+            if msg.is_error:
+                raise RuntimeError(f"Generator run failed: {msg.result!r}")
+            final = msg.result
+    if not final:
+        raise RuntimeError("Generator produced no result.")
+    return _extract_html(final)
