@@ -15,3 +15,6 @@ runs_*/
 
 # Playwright
 .playwright/
+
+# Claude Code local user settings — keep project-wide launch.json tracked.
+.claude/settings.local.json

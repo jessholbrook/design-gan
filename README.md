@@ -89,6 +89,33 @@ fly logs
 If you hit OOM kills during renders, bump `[[vm]] memory = "2gb"` in `fly.toml`
 and `fly deploy` again.
 
+## Static showcase
+
+A self-contained explainer page lives in [`docs/index.html`](docs/index.html) —
+single file, no JS framework, all screenshots inlined as base64. It's the fastest
+way to show someone what design-gan does without giving them an API key.
+
+```bash
+pip install -e .
+python scripts/build_site.py   # regenerates docs/index.html from the seed run
+```
+
+To publish: on GitHub, go to **Settings → Pages**, choose **Deploy from a branch**,
+branch `main`, folder `/docs`. The site will be live at
+`https://<you>.github.io/design-gan/`. Or point Vercel/Netlify at the `docs/`
+directory.
+
+## Tests
+
+```bash
+pip install -e ".[dev]"
+pytest
+```
+
+~90 tests covering the scorer, storage (schema + migration), the extractor
+helpers, the orchestrator loop (with generator/critic/renderer faked), the
+viewer's HTTP endpoints, and the CLI.
+
 ## Design notes
 
 - **Critic sees the rendered page, not just code.** Code-only critique is

@@ -50,6 +50,11 @@ def _build_user_message(req: GenerationRequest) -> str:
 
 _HTML_BLOCK = re.compile(r"```html\s*(.*?)```", re.DOTALL | re.IGNORECASE)
 
+# A generated single-page site should never reasonably exceed this. Larger
+# outputs are almost always runaway generations (repeated sections, hallucinated
+# base64 blobs). Rejecting keeps SQLite + disk bounded.
+MAX_HTML_BYTES = 512 * 1024  # 512 KiB
+
 
 def _extract_html(text: str) -> str:
     match = _HTML_BLOCK.search(text)
@@ -75,4 +80,10 @@ async def generate(model: str, req: GenerationRequest) -> str:
             final = msg.result
     if not final:
         raise RuntimeError("Generator produced no result.")
-    return _extract_html(final)
+    html = _extract_html(final)
+    if len(html.encode("utf-8")) > MAX_HTML_BYTES:
+        raise RuntimeError(
+            f"Generator output exceeded {MAX_HTML_BYTES} bytes "
+            f"({len(html)} chars) — likely runaway generation."
+        )
+    return html

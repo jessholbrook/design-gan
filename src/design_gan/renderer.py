@@ -21,6 +21,7 @@ class RenderResult:
     screenshot_png: bytes
     dom_html: str
     axe_violations: list[dict[str, Any]] = field(default_factory=list)
+    axe_error: str | None = None  # set when axe-core fails to load/run
     console_errors: list[str] = field(default_factory=list)
     viewport: tuple[int, int] = (1280, 800)
 
@@ -55,6 +56,7 @@ async def render(html: str, viewport: tuple[int, int] = (1280, 800)) -> RenderRe
             dom_html = await page.content()
 
             axe_violations: list[dict[str, Any]] = []
+            axe_error: str | None = None
             try:
                 await page.add_script_tag(url=AXE_CDN)
                 result_json = await page.evaluate(
@@ -62,14 +64,16 @@ async def render(html: str, viewport: tuple[int, int] = (1280, 800)) -> RenderRe
                 )
                 parsed = json.loads(result_json)
                 axe_violations = parsed.get("violations", [])
-            except Exception:
-                # axe-core unavailable (offline, blocked); continue without it.
-                pass
+            except Exception as e:
+                # axe-core unavailable (offline, blocked). Record the reason so
+                # callers can tell "no violations" from "never ran".
+                axe_error = f"{type(e).__name__}: {e}"
 
             return RenderResult(
                 screenshot_png=screenshot,
                 dom_html=dom_html,
                 axe_violations=axe_violations,
+                axe_error=axe_error,
                 console_errors=console_errors,
                 viewport=viewport,
             )
@@ -87,7 +91,11 @@ def write_artifacts(result: RenderResult, out_dir: Path) -> dict[str, Path]:
     dom.write_text(result.dom_html, encoding="utf-8")
     axe.write_text(
         json.dumps(
-            {"violations": result.axe_violations, "console_errors": result.console_errors},
+            {
+                "violations": result.axe_violations,
+                "axe_error": result.axe_error,
+                "console_errors": result.console_errors,
+            },
             indent=2,
         ),
         encoding="utf-8",

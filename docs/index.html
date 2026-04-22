@@ -1,0 +1,666 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>design-gan — a dual-agent loop that evolves website designs</title>
+  <meta name="description" content="An autoresearch-style experiment: a Claude generator writes single-page sites, a Claude critic scores them on the System Usability Scale, and the loop feeds feedback back in until the score plateaus." />
+  <style>
+    :root {
+      --bg: #faf9f6;
+      --panel: #ffffff;
+      --border: #e7e5e4;
+      --text: #18181b;
+      --muted: #6b7280;
+      --accent: #2563eb;
+      --accent-soft: #eff6ff;
+      --good: #059669;
+      --ok: #d97706;
+      --bad: #dc2626;
+      --shadow: 0 1px 2px rgba(0, 0, 0, 0.04), 0 4px 12px rgba(0, 0, 0, 0.04);
+    }
+
+    * { box-sizing: border-box; }
+
+    html, body { margin: 0; }
+
+    body {
+      font: 16px/1.6 ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+      color: var(--text);
+      background: var(--bg);
+    }
+
+    a { color: var(--accent); text-decoration: none; }
+    a:hover { text-decoration: underline; }
+
+    .muted { color: var(--muted); }
+
+    .container { max-width: 960px; margin: 0 auto; padding: 48px 24px; }
+
+    /* Hero */
+    .hero { padding-bottom: 32px; border-bottom: 1px solid var(--border); }
+    .kicker {
+      color: var(--muted);
+      letter-spacing: 0.16em;
+      text-transform: uppercase;
+      font-size: 12px;
+      font-weight: 600;
+    }
+    h1 {
+      font-size: clamp(32px, 5vw, 48px);
+      line-height: 1.1;
+      margin: 12px 0 16px;
+      letter-spacing: -0.02em;
+    }
+    .lede {
+      font-size: 18px;
+      color: var(--muted);
+      max-width: 620px;
+      margin: 0 0 24px;
+    }
+    .actions { display: flex; gap: 12px; flex-wrap: wrap; }
+    .btn {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      padding: 10px 16px;
+      border-radius: 8px;
+      font-weight: 600;
+      font-size: 14px;
+      border: 1px solid var(--border);
+      background: var(--panel);
+      color: var(--text);
+    }
+    .btn:hover { border-color: var(--accent); text-decoration: none; }
+    .btn.primary {
+      background: var(--text);
+      color: var(--bg);
+      border-color: var(--text);
+    }
+    .btn.primary:hover { opacity: 0.9; }
+
+    /* Headline stats */
+    .stats {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+      gap: 12px;
+      margin-top: 32px;
+    }
+    .stat {
+      background: var(--panel);
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      padding: 16px;
+    }
+    .stat-label {
+      font-size: 12px;
+      color: var(--muted);
+      text-transform: uppercase;
+      letter-spacing: 0.06em;
+    }
+    .stat-value {
+      font-size: 28px;
+      font-weight: 700;
+      font-variant-numeric: tabular-nums;
+      letter-spacing: -0.01em;
+      margin-top: 4px;
+    }
+    .stat-value.good { color: var(--good); }
+
+    /* Sections */
+    section { margin-top: 56px; }
+    section h2 {
+      font-size: 26px;
+      letter-spacing: -0.01em;
+      margin: 0 0 12px;
+    }
+    section p { margin: 0 0 16px; }
+    section p.lead { color: var(--muted); font-size: 17px; }
+
+    /* Architecture diagram */
+    .diagram {
+      display: block;
+      background: var(--panel);
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      padding: 16px;
+      font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+      font-size: 13px;
+      color: var(--text);
+      white-space: pre;
+      overflow-x: auto;
+    }
+
+    /* Chart */
+    .chart-card {
+      background: var(--panel);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      padding: 24px;
+      margin-top: 16px;
+      box-shadow: var(--shadow);
+    }
+    .chart { width: 100%; height: 240px; display: block; }
+    .chart .grid-line { stroke: #e5e4e1; stroke-width: 1; }
+    .chart .axis-label { fill: var(--muted); font-size: 11px; font-family: inherit; }
+    .chart .line-composite { fill: none; stroke: var(--accent); stroke-width: 2.5; }
+    .chart .line-sus { fill: none; stroke: var(--muted); stroke-width: 1.5; stroke-dasharray: 4 3; }
+    .chart .point { fill: var(--accent); stroke: #fff; stroke-width: 2; }
+    .chart .point-label { fill: var(--text); font-size: 11px; font-weight: 600; font-family: inherit; }
+    .chart .legend text { font-size: 11px; fill: var(--muted); font-family: inherit; }
+
+    /* Iteration cards */
+    .iter-stack { display: flex; flex-direction: column; gap: 20px; margin-top: 16px; }
+    .iter {
+      background: var(--panel);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      overflow: hidden;
+      box-shadow: var(--shadow);
+    }
+    .iter > header {
+      display: flex;
+      justify-content: space-between;
+      align-items: flex-start;
+      padding: 16px 20px;
+      border-bottom: 1px solid var(--border);
+      background: #fafaf8;
+      gap: 12px;
+    }
+    .iter-label { font-size: 12px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.06em; display: block; }
+    .iter-num { font-size: 20px; font-weight: 700; font-variant-numeric: tabular-nums; }
+    .iter-score { display: flex; align-items: center; gap: 16px; }
+    .iter-score-breakdown { display: flex; gap: 16px; font-size: 12px; color: var(--muted); }
+    .iter-score-breakdown span { display: block; text-transform: uppercase; letter-spacing: 0.04em; font-size: 10px; }
+    .iter-score-breakdown b { font-size: 16px; color: var(--text); font-variant-numeric: tabular-nums; }
+    .badge {
+      display: inline-block;
+      padding: 6px 14px;
+      border-radius: 999px;
+      font-size: 18px;
+      font-weight: 700;
+      font-variant-numeric: tabular-nums;
+    }
+    .badge.score-good { background: #d1fae5; color: #065f46; }
+    .badge.score-ok { background: #fef3c7; color: #92400e; }
+    .badge.score-bad { background: #fee2e2; color: #991b1b; }
+    .badge.score-none { background: #e5e7eb; color: #374151; }
+
+    .iter-body {
+      display: grid;
+      grid-template-columns: 320px 1fr;
+      gap: 20px;
+      padding: 20px;
+    }
+    .iter-thumb {
+      display: block;
+      background: var(--bg);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      overflow: hidden;
+      line-height: 0;
+      aspect-ratio: 16 / 9;
+    }
+    .iter-thumb img {
+      width: 100%;
+      height: 100%;
+      object-fit: cover;
+      object-position: top left;
+      transition: transform 0.3s ease;
+    }
+    .iter-thumb:hover img { transform: scale(1.02); }
+    .iter-detail h3 { font-size: 13px; letter-spacing: 0.04em; text-transform: uppercase; color: var(--muted); margin: 0 0 8px; font-weight: 600; }
+    .iter-detail h3:not(:first-child) { margin-top: 18px; }
+    .iter-detail .feedback { margin: 0; }
+    .suggestions { margin: 0; padding-left: 20px; }
+    .suggestions li { margin-bottom: 4px; }
+
+    /* SUS breakdown row */
+    .sus-row {
+      list-style: none;
+      margin: 0;
+      padding: 0;
+      display: grid;
+      grid-template-columns: repeat(10, 1fr);
+      gap: 6px;
+    }
+    .sus-row li {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      gap: 4px;
+    }
+    .sus-bar {
+      width: 100%;
+      height: 44px;
+      background: #f1efe9;
+      border-radius: 4px;
+      display: flex;
+      align-items: flex-end;
+      overflow: hidden;
+    }
+    .sus-fill {
+      width: 100%;
+      background: var(--accent);
+      border-radius: 4px;
+      min-height: 2px;
+    }
+    .sus-num { font-size: 10px; color: var(--muted); font-variant-numeric: tabular-nums; }
+
+    /* Code blocks */
+    pre, code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 13px; }
+    pre {
+      background: #0f172a;
+      color: #e2e8f0;
+      padding: 16px 18px;
+      border-radius: 8px;
+      overflow-x: auto;
+      line-height: 1.5;
+    }
+    pre code { background: transparent; padding: 0; color: inherit; }
+    p code {
+      background: #eef2ff;
+      padding: 1px 6px;
+      border-radius: 4px;
+      font-size: 13px;
+    }
+
+    /* Footer */
+    footer { margin-top: 72px; padding: 24px 0; border-top: 1px solid var(--border); color: var(--muted); font-size: 14px; }
+
+    details.dataset {
+      margin-top: 16px;
+      background: var(--panel);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 12px 16px;
+    }
+    details.dataset summary { cursor: pointer; color: var(--muted); font-size: 13px; }
+    details.dataset pre { margin-top: 10px; max-height: 320px; }
+
+    @media (max-width: 720px) {
+      .iter-body { grid-template-columns: 1fr; }
+      .sus-row { grid-template-columns: repeat(5, 1fr); }
+    }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <section class="hero">
+      <span class="kicker">An experiment · autoresearch × design</span>
+      <h1>Two Claudes, one critic, and a website that learns.</h1>
+      <p class="lede">
+        <strong>design-gan</strong> is a dual-agent loop: a <em>generator</em>
+        writes a single-page website from a brief, a <em>critic</em> scores it
+        on the System Usability Scale, and the feedback rolls forward into the
+        next draft — until the composite score plateaus.
+      </p>
+      <div class="actions">
+        <a class="btn primary" href="https://github.com/jessholbrook/design-gan">View on GitHub</a>
+        <a class="btn" href="#the-run">Skip to the run &rarr;</a>
+      </div>
+
+      <div class="stats">
+        <div class="stat">
+          <div class="stat-label">Best composite</div>
+          <div class="stat-value good">95</div>
+        </div>
+        <div class="stat">
+          <div class="stat-label">Starting composite</div>
+          <div class="stat-value">7</div>
+        </div>
+        <div class="stat">
+          <div class="stat-label">Delta</div>
+          <div class="stat-value good">+88</div>
+        </div>
+        <div class="stat">
+          <div class="stat-label">Iterations</div>
+          <div class="stat-value">4</div>
+        </div>
+      </div>
+    </section>
+
+    <section id="the-idea">
+      <h2>The idea</h2>
+      <p class="lead">
+        Good-looking demos don't prove usability. The only way to know whether a
+        generated site <em>actually works</em> is to put it in front of a user —
+        but that doesn't scale. <strong>design-gan</strong> approximates that
+        loop with a second model.
+      </p>
+      <p>
+        A <strong>generator</strong> agent writes a standalone HTML document
+        from the brief. A headless Chromium takes a screenshot, dumps the DOM,
+        and runs <a href="https://github.com/dequelabs/axe-core">axe-core</a>
+        for a hard-grounded accessibility check. A <strong>critic</strong>
+        agent then sees the <em>rendered page</em> — not the code — and fills
+        out the 10-item <a href="https://measuringu.com/sus/">System Usability
+        Scale</a>, plus writes prose feedback and a short list of concrete
+        next-step suggestions.
+      </p>
+      <p>
+        The suggestions feed the next generator call. The loop stops after a
+        configurable patience window of iterations that produce no meaningful
+        composite-score gain, or at a hard iteration cap.
+      </p>
+    </section>
+
+    <section id="how-it-works">
+      <h2>How a single iteration works</h2>
+      <pre class="diagram">brief ──▶ generator ──▶ HTML ──▶ headless Chromium
+                                          │
+                                          ├─▶ screenshot
+                                          ├─▶ DOM
+                                          └─▶ axe-core violations
+                                                    │
+                                                    ▼
+                         critic ◀── System Usability Scale
+                           │
+                           ├─▶ SUS answers (10 × 1–5)
+                           ├─▶ prose feedback
+                           └─▶ prioritized suggestions ──▶ next generator call</pre>
+      <p>
+        The composite score is the standard SUS score (0–100) minus a weighted
+        axe-core penalty. Accessibility alone can't dominate — the penalty is
+        capped — but it keeps the critic honest: "looks nice" can't hide a
+        colour-contrast failure or missing alt text.
+      </p>
+    </section>
+
+    <section id="the-run">
+      <h2>A run, iteration by iteration</h2>
+      <p class="lead">
+        Brief: &ldquo;A landing page for a weekend cycling tour in rural Vermont.&rdquo;
+      </p>
+      <p>
+        Four iterations, from a wall of unstyled text to something that would
+        survive a real usability study. The critic's feedback and suggestion
+        list are verbatim — these are the tokens that shaped the next draft.
+        Click any screenshot to open that iteration's actual generated HTML in
+        a new tab.
+      </p>
+
+      <div class="chart-card">
+        <svg viewBox="0 0 800 240" class="chart" preserveAspectRatio="xMidYMid meet">
+  <line class="grid-line" x1="40" y1="212.0" x2="784" y2="212.0" /><text class="axis-label" x="6" y="216.0">0</text>
+<line class="grid-line" x1="40" y1="163.0" x2="784" y2="163.0" /><text class="axis-label" x="6" y="167.0">25</text>
+<line class="grid-line" x1="40" y1="114.0" x2="784" y2="114.0" /><text class="axis-label" x="6" y="118.0">50</text>
+<line class="grid-line" x1="40" y1="65.0" x2="784" y2="65.0" /><text class="axis-label" x="6" y="69.0">75</text>
+<line class="grid-line" x1="40" y1="16.0" x2="784" y2="16.0" /><text class="axis-label" x="6" y="20.0">100</text>
+  <polyline class="line-sus" points="40.0,163.0 226.0,114.0 412.0,65.0 598.0,25.8" />
+  <polyline class="line-composite" points="40.0,198.3 226.0,132.6 412.0,74.8 598.0,25.8" />
+  <g><circle class="point" cx="40.0" cy="198.3" r="4" /><text class="point-label" x="40.0" y="188.3" text-anchor="middle">7</text></g>
+<g><circle class="point" cx="226.0" cy="132.6" r="4" /><text class="point-label" x="226.0" y="122.6" text-anchor="middle">40</text></g>
+<g><circle class="point" cx="412.0" cy="74.8" r="4" /><text class="point-label" x="412.0" y="64.8" text-anchor="middle">70</text></g>
+<g><circle class="point" cx="598.0" cy="25.8" r="4" /><text class="point-label" x="598.0" y="15.8" text-anchor="middle">95</text></g>
+  <text class="axis-label" x="40.0" y="228" text-anchor="middle">#1</text>
+<text class="axis-label" x="226.0" y="228" text-anchor="middle">#2</text>
+<text class="axis-label" x="412.0" y="228" text-anchor="middle">#3</text>
+<text class="axis-label" x="598.0" y="228" text-anchor="middle">#4</text>
+  <g class="legend" transform="translate(620, 22)">
+    <line class="line-composite" x1="0" y1="6" x2="24" y2="6" />
+    <text x="30" y="10">composite</text>
+    <line class="line-sus" x1="90" y1="6" x2="114" y2="6" />
+    <text x="120" y="10">SUS</text>
+  </g>
+</svg>
+      </div>
+
+      <div class="iter-stack">
+        <article class="iter">
+  <header>
+    <div class="iter-meta">
+      <span class="iter-label">Iteration</span>
+      <span class="iter-num">#1</span>
+    </div>
+    <div class="iter-score">
+      <span class="badge score-bad">7</span>
+      <div class="iter-score-breakdown">
+        <div><span>SUS</span><b>25</b></div>
+        <div><span>a11y penalty</span><b>18</b></div>
+      </div>
+    </div>
+  </header>
+  <div class="iter-body">
+    <a class="iter-thumb" href="data:text/html;base64,PCFkb2N0eXBlIGh0bWw+PGh0bWw+PGJvZHk+CjxwPldlZWtlbmQgY3ljbGluZyB0b3VyIGluIHJ1cmFsIFZlcm1vbnQuIE9jdG9iZXIgZm9saWFnZSwgcXVpZXQgYmFjayByb2FkcywgZmFybS10by10YWJsZQpzdG9wcy4gU21hbGwgZ3JvdXBzLiBCb29rIG5vdyBieSBlbWFpbGluZyB0b3Vyc0BleGFtcGxlLmNvbS48L3A+CjwvYm9keT48L2h0bWw+" target="_blank" rel="noopener"
+       title="Open this iteration's generated HTML">
+      <img src="data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAUAAAAC0CAIAAABqhmJGAAABkklEQVR42u3TAQkAAAzDsPkXMI2XcR2DQBQUmmuBUZEADAwYGDAwGBgwMGBgwMBgYMDAgIHBwICBAQMDBgYDAwYGDAwYGAwMGBgwMBgYMDBgYMDAYGDAwICBAQODgQEDAwYGAwMGBgwMGBgMDBgYMDAYWAUwMGBgwMBgYMDAgIEBA4OBAQMDBgYDAwYGDAwYGAwMGBgwMGBgMDBgYMDAYGDAwICBAQODgQEDAwYGDAwGBgwMGBgMDBgYMDBgYDAwYGDAwGBgwMCAgQEDg4EBAwMGBgwMBgYMDBgYDAwYGDAwYGAwMGBgwMCAgcHAgIEBA4OBAQMDBgYMDAYGDAwYGDAwGBgwMGBgMDBgYMDAgIHBwICBAQODgQEDAwYGDAwGBgwMGBgwMBgYMDBgYDAwYGDAwICBwcCAgQEDAwYGAwMGBgwMBgYMDBgYMDAYGDAwYGAwsApgYMDAgIHBwICBAQMDBgYDAwYGDAwGBgwMGBgwMBgYMDBgYMDAYGDAwICBwcCAgQEDAwYGAwMGBgwMGBi2PQyPr16hJfdxAAAAAElFTkSuQmCC" alt="Screenshot of iteration 1" />
+    </a>
+    <div class="iter-detail">
+      <h3>Critic feedback</h3>
+      <p class="feedback">The page is a wall of unstyled text. The headline is lost, the call-to-action blends into the paragraph, and there is no visual hierarchy whatsoever.</p>
+      <h3>SUS answers <span class="muted">(1–5 Likert, 10 items)</span></h3>
+      <ul class="sus-row"><li title="Would use frequently: 2/5 (+)"><span class="sus-bar"><span class="sus-fill" style="height:25%"></span></span><span class="sus-num">2</span></li><li title="Unnecessarily complex: 4/5 (−)"><span class="sus-bar"><span class="sus-fill" style="height:25%"></span></span><span class="sus-num">4</span></li><li title="Easy to use: 2/5 (+)"><span class="sus-bar"><span class="sus-fill" style="height:25%"></span></span><span class="sus-num">2</span></li><li title="Needs tech support: 4/5 (−)"><span class="sus-bar"><span class="sus-fill" style="height:25%"></span></span><span class="sus-num">4</span></li><li title="Well integrated: 2/5 (+)"><span class="sus-bar"><span class="sus-fill" style="height:25%"></span></span><span class="sus-num">2</span></li><li title="Too inconsistent: 4/5 (−)"><span class="sus-bar"><span class="sus-fill" style="height:25%"></span></span><span class="sus-num">4</span></li><li title="Learn quickly: 2/5 (+)"><span class="sus-bar"><span class="sus-fill" style="height:25%"></span></span><span class="sus-num">2</span></li><li title="Cumbersome: 4/5 (−)"><span class="sus-bar"><span class="sus-fill" style="height:25%"></span></span><span class="sus-num">4</span></li><li title="Confident using: 2/5 (+)"><span class="sus-bar"><span class="sus-fill" style="height:25%"></span></span><span class="sus-num">2</span></li><li title="Need to learn a lot: 4/5 (−)"><span class="sus-bar"><span class="sus-fill" style="height:25%"></span></span><span class="sus-num">4</span></li></ul>
+      <h3>Suggestions sent to the next generator</h3>
+      <ul class="suggestions"><li>Add a distinct hero section with a primary headline.</li><li>Promote the CTA to a visible button.</li><li>Introduce a typographic scale (h1/h2/body).</li><li>Apply a consistent color palette.</li></ul>
+    </div>
+  </div>
+</article>
+<article class="iter">
+  <header>
+    <div class="iter-meta">
+      <span class="iter-label">Iteration</span>
+      <span class="iter-num">#2</span>
+    </div>
+    <div class="iter-score">
+      <span class="badge score-bad">40</span>
+      <div class="iter-score-breakdown">
+        <div><span>SUS</span><b>50</b></div>
+        <div><span>a11y penalty</span><b>10</b></div>
+      </div>
+    </div>
+  </header>
+  <div class="iter-body">
+    <a class="iter-thumb" href="data:text/html;base64,PCFkb2N0eXBlIGh0bWw+PGh0bWw+PGJvZHkgc3R5bGU9ImZvbnQtZmFtaWx5OnNhbnMtc2VyaWY7bWF4LXdpZHRoOjY0MHB4O21hcmdpbjo0MHB4IGF1dG8iPgo8aDE+VmVybW9udCBDeWNsaW5nIFRvdXI8L2gxPgo8cD5BIHdlZWtlbmQgb2YgYmFjay1yb2FkIGN5Y2xpbmcgdGhyb3VnaCBydXJhbCBWZXJtb250IGR1cmluZyBwZWFrIGZvbGlhZ2UuIFNtYWxsIGdyb3VwcywKZmFybS10by10YWJsZSBtZWFscywgY29tZm9ydGFibGUgaW5ucy48L3A+CjxhIGhyZWY9IiNib29rIiBzdHlsZT0iYmFja2dyb3VuZDojY2NjO3BhZGRpbmc6OHB4IDE2cHgiPkJvb2sgYSBzcG90PC9hPgo8L2JvZHk+PC9odG1sPg==" target="_blank" rel="noopener"
+       title="Open this iteration's generated HTML">
+      <img src="data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAUAAAAC0CAIAAABqhmJGAAABk0lEQVR42u3TAQkAAAzDsGm/uiu5jusYBKKg0NwOUCoSgIEBAwMGBgMDBgYMDBgYDAwYGDAwGBgwMGBgwMBgYMDAgIEBA4OBAQMDBgYDAwYGDAwYGAwMGBgwMGBgMDBgYMDAYGDAwICBAQODgQEDAwYGA6sABgYMDBgYDAwYGDAwYGAwMGBgwMBgYMDAgIEBA4OBAQMDBgYMDAYGDAwYGAwMGBgwMGBgMDBgYMDAgIHBwICBAQODgQEDAwYGDAwGBgwMGBgMDBgYMDBgYDAwYGDAwICBwcCAgQEDg4EBAwMGBgwMBgYMDBgYMDAYGDAwYGAwMGBgwMCAgcHAgIEBAwMGBgMDBgYMDAYGDAwYGDAwGBgwMGBgMDBgYMDAgIHBwICBAQMDBgYDAwYGDAwGBgwMGBgwMBgYMDBgYMDAYGDAwICBwcCAgQEDAwYGAwMGBgwMBlYBDAwYGDAwGBgwMGBgwMBgYMDAgIHBwICBAQMDBgYDAwYGDAwYGAwMGBgwMBgYMDBgYMDAYGDAwICBAQNDtwf+uEzVSfX9nQAAAABJRU5ErkJggg==" alt="Screenshot of iteration 2" />
+    </a>
+    <div class="iter-detail">
+      <h3>Critic feedback</h3>
+      <p class="feedback">A hero section and a visible CTA now exist, but spacing is cramped and contrast on the CTA is borderline. Information density is still high.</p>
+      <h3>SUS answers <span class="muted">(1–5 Likert, 10 items)</span></h3>
+      <ul class="sus-row"><li title="Would use frequently: 3/5 (+)"><span class="sus-bar"><span class="sus-fill" style="height:50%"></span></span><span class="sus-num">3</span></li><li title="Unnecessarily complex: 3/5 (−)"><span class="sus-bar"><span class="sus-fill" style="height:50%"></span></span><span class="sus-num">3</span></li><li title="Easy to use: 3/5 (+)"><span class="sus-bar"><span class="sus-fill" style="height:50%"></span></span><span class="sus-num">3</span></li><li title="Needs tech support: 3/5 (−)"><span class="sus-bar"><span class="sus-fill" style="height:50%"></span></span><span class="sus-num">3</span></li><li title="Well integrated: 3/5 (+)"><span class="sus-bar"><span class="sus-fill" style="height:50%"></span></span><span class="sus-num">3</span></li><li title="Too inconsistent: 3/5 (−)"><span class="sus-bar"><span class="sus-fill" style="height:50%"></span></span><span class="sus-num">3</span></li><li title="Learn quickly: 3/5 (+)"><span class="sus-bar"><span class="sus-fill" style="height:50%"></span></span><span class="sus-num">3</span></li><li title="Cumbersome: 3/5 (−)"><span class="sus-bar"><span class="sus-fill" style="height:50%"></span></span><span class="sus-num">3</span></li><li title="Confident using: 3/5 (+)"><span class="sus-bar"><span class="sus-fill" style="height:50%"></span></span><span class="sus-num">3</span></li><li title="Need to learn a lot: 3/5 (−)"><span class="sus-bar"><span class="sus-fill" style="height:50%"></span></span><span class="sus-num">3</span></li></ul>
+      <h3>Suggestions sent to the next generator</h3>
+      <ul class="suggestions"><li>Increase vertical rhythm between sections.</li><li>Raise CTA contrast to at least 4.5:1.</li><li>Break the single-column layout into scannable chunks.</li></ul>
+    </div>
+  </div>
+</article>
+<article class="iter">
+  <header>
+    <div class="iter-meta">
+      <span class="iter-label">Iteration</span>
+      <span class="iter-num">#3</span>
+    </div>
+    <div class="iter-score">
+      <span class="badge score-ok">70</span>
+      <div class="iter-score-breakdown">
+        <div><span>SUS</span><b>75</b></div>
+        <div><span>a11y penalty</span><b>5</b></div>
+      </div>
+    </div>
+  </header>
+  <div class="iter-body">
+    <a class="iter-thumb" href="data:text/html;base64,PCFkb2N0eXBlIGh0bWw+PGh0bWw+PGJvZHkgc3R5bGU9ImZvbnQtZmFtaWx5OnN5c3RlbS11aTttYXJnaW46MDtjb2xvcjojMjIyIj4KPGhlYWRlciBzdHlsZT0icGFkZGluZzo2NHB4IDI0cHg7YmFja2dyb3VuZDojZmFmYWY4O3RleHQtYWxpZ246Y2VudGVyIj4KICA8aDEgc3R5bGU9ImZvbnQtc2l6ZTo0MHB4O21hcmdpbjowIDAgMTJweCI+UmlkZSBWZXJtb250IGluIE9jdG9iZXI8L2gxPgogIDxwIHN0eWxlPSJtYXgtd2lkdGg6NTYwcHg7bWFyZ2luOjAgYXV0byAyNHB4O2NvbG9yOiM1NTUiPkEgMy1kYXkgY3ljbGluZyB3ZWVrZW5kIHRocm91Z2gKICAgICBydXJhbCBWZXJtb250IOKAlCBxdWlldCByb2FkcywgcGVhayBmb2xpYWdlLCBmYXJtLXRvLXRhYmxlIG1lYWxzLCBzbWFsbCBncm91cHMuPC9wPgogIDxhIGhyZWY9IiNib29rIiBzdHlsZT0iYmFja2dyb3VuZDojMmE2O2NvbG9yOiNmZmY7cGFkZGluZzoxMnB4IDI0cHg7Ym9yZGVyLXJhZGl1czo2cHg7CiAgICAgdGV4dC1kZWNvcmF0aW9uOm5vbmU7Zm9udC13ZWlnaHQ6NjAwIj5Cb29rIHlvdXIgd2Vla2VuZDwvYT4KPC9oZWFkZXI+CjxzZWN0aW9uIHN0eWxlPSJwYWRkaW5nOjQ4cHggMjRweDttYXgtd2lkdGg6NzIwcHg7bWFyZ2luOjAgYXV0byI+CiAgPGgyPldoYXQncyBpbmNsdWRlZDwvaDI+CiAgPHVsPjxsaT4zIGRheXMgb2YgZ3VpZGVkIHJpZGluZzwvbGk+PGxpPkFsbCBtZWFsczwvbGk+PGxpPklubiBsb2RnaW5nPC9saT48L3VsPgo8L3NlY3Rpb24+CjwvYm9keT48L2h0bWw+" target="_blank" rel="noopener"
+       title="Open this iteration's generated HTML">
+      <img src="data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAUAAAAC0CAIAAABqhmJGAAABlElEQVR42u3TQQkAAAwDsfpXsffkTNF0FAJRcHDZG6BUJAADAwYGDAwGBgwMGBgwMBgYMDBgYDAwYGDAwICBwcCAgQEDAwYGAwMGBgwMBgYMDBgYMDAYGDAwYGDAwGBgwMCAgcHAgIEBAwMGBgMDBgYMDAZWAQwMGBgwMBgYMDBgYMDAYGDAwICBwcCAgQEDAwYGAwMGBgwMGBgMDBgYMDAYGDAwYGDAwGBgwMCAgQEDg4EBAwMGBgMDBgYMDBgYDAwYGDAwGBgwMGBgwMBgYMDAgIEBA4OBAQMDBgYDAwYGDAwYGAwMGBgwMGBgMDBgYMDAYGDAwICBAQODgQEDAwYGDAwGBgwMGBgMDBgYMDBgYDAwYGDAwGBgwMCAgQEDg4EBAwMGBgwMBgYMDBgYDAwYGDAwYGAwMGBgwMCAgcHAgIEBA4OBAQMDBgYMDAYGDAwYGAysAhgYMDBgYDAwYGDAwICBwcCAgQEDg4EBAwMGBgwMBgYMDBgYMDAYGDAwYGAwMGBgwMCAgcHAgIEBAwMGhm4Pyb+3x6oydDMAAAAASUVORK5CYII=" alt="Screenshot of iteration 3" />
+    </a>
+    <div class="iter-detail">
+      <h3>Critic feedback</h3>
+      <p class="feedback">Layout is clean and the CTA is unambiguous. Typography is coherent, and the site communicates its purpose within a glance. A11y is solid.</p>
+      <h3>SUS answers <span class="muted">(1–5 Likert, 10 items)</span></h3>
+      <ul class="sus-row"><li title="Would use frequently: 4/5 (+)"><span class="sus-bar"><span class="sus-fill" style="height:75%"></span></span><span class="sus-num">4</span></li><li title="Unnecessarily complex: 2/5 (−)"><span class="sus-bar"><span class="sus-fill" style="height:75%"></span></span><span class="sus-num">2</span></li><li title="Easy to use: 4/5 (+)"><span class="sus-bar"><span class="sus-fill" style="height:75%"></span></span><span class="sus-num">4</span></li><li title="Needs tech support: 2/5 (−)"><span class="sus-bar"><span class="sus-fill" style="height:75%"></span></span><span class="sus-num">2</span></li><li title="Well integrated: 4/5 (+)"><span class="sus-bar"><span class="sus-fill" style="height:75%"></span></span><span class="sus-num">4</span></li><li title="Too inconsistent: 2/5 (−)"><span class="sus-bar"><span class="sus-fill" style="height:75%"></span></span><span class="sus-num">2</span></li><li title="Learn quickly: 4/5 (+)"><span class="sus-bar"><span class="sus-fill" style="height:75%"></span></span><span class="sus-num">4</span></li><li title="Cumbersome: 2/5 (−)"><span class="sus-bar"><span class="sus-fill" style="height:75%"></span></span><span class="sus-num">2</span></li><li title="Confident using: 4/5 (+)"><span class="sus-bar"><span class="sus-fill" style="height:75%"></span></span><span class="sus-num">4</span></li><li title="Need to learn a lot: 2/5 (−)"><span class="sus-bar"><span class="sus-fill" style="height:75%"></span></span><span class="sus-num">2</span></li></ul>
+      <h3>Suggestions sent to the next generator</h3>
+      <ul class="suggestions"><li>Add supporting social-proof or testimonials below the fold.</li><li>Consider an accent color for interactive elements.</li></ul>
+    </div>
+  </div>
+</article>
+<article class="iter">
+  <header>
+    <div class="iter-meta">
+      <span class="iter-label">Iteration</span>
+      <span class="iter-num">#4</span>
+    </div>
+    <div class="iter-score">
+      <span class="badge score-good">95</span>
+      <div class="iter-score-breakdown">
+        <div><span>SUS</span><b>95</b></div>
+        <div><span>a11y penalty</span><b>0</b></div>
+      </div>
+    </div>
+  </header>
+  <div class="iter-body">
+    <a class="iter-thumb" href="data:text/html;base64,PCFkb2N0eXBlIGh0bWw+PGh0bWw+PGJvZHkgc3R5bGU9ImZvbnQtZmFtaWx5Okdlb3JnaWEsc2VyaWY7bWFyZ2luOjA7Y29sb3I6IzFhMWExYTsKICAgICBiYWNrZ3JvdW5kOiNmZGZkZmEiPgo8aGVhZGVyIHN0eWxlPSJwYWRkaW5nOjk2cHggMzJweDt0ZXh0LWFsaWduOmNlbnRlcjtib3JkZXItYm90dG9tOjFweCBzb2xpZCAjZWVlIj4KICA8cCBzdHlsZT0ibGV0dGVyLXNwYWNpbmc6LjJlbTtjb2xvcjojODg4O2ZvbnQtc2l6ZToxMnB4O21hcmdpbjowIj5PQ1RPQkVSIDExLTEzPC9wPgogIDxoMSBzdHlsZT0iZm9udC1zaXplOjQ4cHg7bWFyZ2luOjEycHggMCAxNnB4O2ZvbnQtd2VpZ2h0OjQwMCI+VGhyZWUgZGF5cyBvbjxicj5WZXJtb250J3MgcXVpZXRlc3Qgcm9hZHM8L2gxPgogIDxwIHN0eWxlPSJtYXgtd2lkdGg6NTYwcHg7bWFyZ2luOjAgYXV0byAzMnB4O2NvbG9yOiM0NDQ7Zm9udC1zaXplOjE4cHg7bGluZS1oZWlnaHQ6MS42Ij4KICAgICBBIHNtYWxsLWdyb3VwIGN5Y2xpbmcgd2Vla2VuZCB0aHJvdWdoIHRoZSBHcmVlbiBNb3VudGFpbnMgYXQgcGVhayBmb2xpYWdlLiBGYXJtLXRvLXRhYmxlCiAgICAgZGlubmVycy4gSGFuZHBpY2tlZCBpbm5zLiAzNSBtaWxlcyBhIGRheS48L3A+CiAgPGEgaHJlZj0iI2Jvb2siIHN0eWxlPSJiYWNrZ3JvdW5kOiMxYTFhMWE7Y29sb3I6I2ZmZjtwYWRkaW5nOjE0cHggMzJweDtib3JkZXItcmFkaXVzOjRweDsKICAgICB0ZXh0LWRlY29yYXRpb246bm9uZTtmb250LXdlaWdodDo2MDA7bGV0dGVyLXNwYWNpbmc6LjA1ZW0iPlJFU0VSVkUgWU9VUiBTUE9UPC9hPgo8L2hlYWRlcj4KPG1haW4gc3R5bGU9Im1heC13aWR0aDo3MjBweDttYXJnaW46NjRweCBhdXRvO3BhZGRpbmc6MCAzMnB4O2xpbmUtaGVpZ2h0OjEuNyI+CiAgPGgyIHN0eWxlPSJmb250LXdlaWdodDo0MDAiPlRoZSB3ZWVrZW5kPC9oMj4KICA8cD5Zb3UnbGwgcmlkZSB3aXRoIDYgb3RoZXIgY3ljbGlzdHMgYW5kIG9uZSBndWlkZS4gVGhlIHJvdXRlIGxvb3BzIGZyb20gV29vZHN0b2NrIHRocm91Z2gKICAgICBCYXJuYXJkIGFuZCB0aGUgUG9tZnJldCBob2xsb3dzIOKAlCBkaXJ0IHJvYWRzLCBjb3ZlcmVkIGJyaWRnZXMsIG5vIHRyYWZmaWMuPC9wPgogIDxoMiBzdHlsZT0iZm9udC13ZWlnaHQ6NDAwO21hcmdpbi10b3A6NDhweCI+V2hhdCdzIGluY2x1ZGVkPC9oMj4KICA8cD5Ud28gbmlnaHRzIGF0IHRoZSBCYXJuYXJkIElubiwgZml2ZSBtZWFscywgYSBzdXBwb3J0IHZhbiwgYW5kIGEgcm91dGUgc2hlZXQgeW91J2xsIG5ldmVyCiAgICAgbmVlZCB0byBvcGVuLjwvcD4KPC9tYWluPgo8L2JvZHk+PC9odG1sPg==" target="_blank" rel="noopener"
+       title="Open this iteration's generated HTML">
+      <img src="data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAUAAAAC0CAIAAABqhmJGAAABk0lEQVR42u3TAQkAAAzDsMm+iAu7rOsYBKKg0MwtUCoSgIEBAwMGBgMDBgYMDBgYDAwYGDAwGBgwMGBgwMBgYMDAgIEBA4OBAQMDBgYDAwYGDAwYGAwMGBgwMGBgMDBgYMDAYGDAwICBAQODgQEDAwYGA6sABgYMDBgYDAwYGDAwYGAwMGBgwMBgYMDAgIEBA4OBAQMDBgYMDAYGDAwYGAwMGBgwMGBgMDBgYMDAgIHBwICBAQODgQEDAwYGDAwGBgwMGBgMDBgYMDBgYDAwYGDAwICBwcCAgQEDg4EBAwMGBgwMBgYMDBgYMDAYGDAwYGAwMGBgwMCAgcHAgIEBAwMGBgMDBgYMDAYGDAwYGDAwGBgwMGBgMDBgYMDAgIHBwICBAQMDBgYDAwYGDAwGBgwMGBgwMBgYMDBgYMDAYGDAwICBwcCAgQEDAwYGAwMGBgwMBlYBDAwYGDAwGBgwMGBgwMBgYMDAgIHBwICBAQMDBgYDAwYGDAwYGAwMGBgwMBgYMDBgYMDAYGDAwICBAQNDtwcQ2WOtqb+7qgAAAABJRU5ErkJggg==" alt="Screenshot of iteration 4" />
+    </a>
+    <div class="iter-detail">
+      <h3>Critic feedback</h3>
+      <p class="feedback">Excellent. The page now reads at a glance, hierarchy guides the eye to the CTA, and supporting content reinforces the primary action. No a11y issues.</p>
+      <h3>SUS answers <span class="muted">(1–5 Likert, 10 items)</span></h3>
+      <ul class="sus-row"><li title="Would use frequently: 5/5 (+)"><span class="sus-bar"><span class="sus-fill" style="height:100%"></span></span><span class="sus-num">5</span></li><li title="Unnecessarily complex: 1/5 (−)"><span class="sus-bar"><span class="sus-fill" style="height:100%"></span></span><span class="sus-num">1</span></li><li title="Easy to use: 5/5 (+)"><span class="sus-bar"><span class="sus-fill" style="height:100%"></span></span><span class="sus-num">5</span></li><li title="Needs tech support: 1/5 (−)"><span class="sus-bar"><span class="sus-fill" style="height:100%"></span></span><span class="sus-num">1</span></li><li title="Well integrated: 4/5 (+)"><span class="sus-bar"><span class="sus-fill" style="height:75%"></span></span><span class="sus-num">4</span></li><li title="Too inconsistent: 2/5 (−)"><span class="sus-bar"><span class="sus-fill" style="height:75%"></span></span><span class="sus-num">2</span></li><li title="Learn quickly: 5/5 (+)"><span class="sus-bar"><span class="sus-fill" style="height:100%"></span></span><span class="sus-num">5</span></li><li title="Cumbersome: 1/5 (−)"><span class="sus-bar"><span class="sus-fill" style="height:100%"></span></span><span class="sus-num">1</span></li><li title="Confident using: 5/5 (+)"><span class="sus-bar"><span class="sus-fill" style="height:100%"></span></span><span class="sus-num">5</span></li><li title="Need to learn a lot: 1/5 (−)"><span class="sus-bar"><span class="sus-fill" style="height:100%"></span></span><span class="sus-num">1</span></li></ul>
+      <h3>Suggestions sent to the next generator</h3>
+      <ul class="suggestions"><li>Optional: tighten copy in the second section for mobile.</li></ul>
+    </div>
+  </div>
+</article>
+      </div>
+    </section>
+
+    <section id="design-notes">
+      <h2>Design notes</h2>
+      <ul>
+        <li><strong>The critic sees the rendered page, not the code.</strong> Code-only critique is cheap but correlates poorly with real usability.</li>
+        <li><strong>Subjective + objective.</strong> SUS alone is gameable; axe-core anchors the score to measurable a11y signals.</li>
+        <li><strong>Convergence, operationalised.</strong> &ldquo;No further improvements&rdquo; = <code>patience</code> iterations in a row without a composite gain of at least <code>tolerance</code> points.</li>
+        <li><strong>Structured output.</strong> The critic uses Pydantic-validated JSON so a malformed response triggers a retry with a stricter nudge.</li>
+        <li><strong>Prompt caching.</strong> System prompts are cached as <code>ephemeral</code>, so iteration <em>N+1</em> pays near-zero for the static instructions.</li>
+      </ul>
+    </section>
+
+    <section id="run-it">
+      <h2>Run it yourself</h2>
+      <pre><code>pip install -e .
+playwright install chromium
+cp .env.example .env  # add your ANTHROPIC_API_KEY
+
+# Web UI — kick off runs, watch them stream in live
+design-gan viewer      # http://127.0.0.1:8000
+
+# Or one evolution loop from the terminal
+design-gan run "A landing page for a weekend cycling tour in rural Vermont."</code></pre>
+      <p>
+        Source, setup details, and a Fly.io deploy config are in the
+        <a href="https://github.com/jessholbrook/design-gan">GitHub repository</a>.
+      </p>
+
+      <details class="dataset">
+        <summary>Raw dataset for this run (JSON)</summary>
+        <pre><code>[
+  {
+    "iter": 1,
+    "sus_score": 25.0,
+    "axe_penalty": 18.0,
+    "composite_score": 7.0,
+    "sus_answers": [
+      2,
+      4,
+      2,
+      4,
+      2,
+      4,
+      2,
+      4,
+      2,
+      4
+    ],
+    "feedback": "The page is a wall of unstyled text. The headline is lost, the call-to-action blends into the paragraph, and there is no visual hierarchy whatsoever.",
+    "suggestions": [
+      "Add a distinct hero section with a primary headline.",
+      "Promote the CTA to a visible button.",
+      "Introduce a typographic scale (h1/h2/body).",
+      "Apply a consistent color palette."
+    ]
+  },
+  {
+    "iter": 2,
+    "sus_score": 50.0,
+    "axe_penalty": 9.5,
+    "composite_score": 40.5,
+    "sus_answers": [
+      3,
+      3,
+      3,
+      3,
+      3,
+      3,
+      3,
+      3,
+      3,
+      3
+    ],
+    "feedback": "A hero section and a visible CTA now exist, but spacing is cramped and contrast on the CTA is borderline. Information density is still high.",
+    "suggestions": [
+      "Increase vertical rhythm between sections.",
+      "Raise CTA contrast to at least 4.5:1.",
+      "Break the single-column layout into scannable chunks."
+    ]
+  },
+  {
+    "iter": 3,
+    "sus_score": 75.0,
+    "axe_penalty": 5.0,
+    "composite_score": 70.0,
+    "sus_answers": [
+      4,
+      2,
+      4,
+      2,
+      4,
+      2,
+      4,
+      2,
+      4,
+      2
+    ],
+    "feedback": "Layout is clean and the CTA is unambiguous. Typography is coherent, and the site communicates its purpose within a glance. A11y is solid.",
+    "suggestions": [
+      "Add supporting social-proof or testimonials below the fold.",
+      "Consider an accent color for interactive elements."
+    ]
+  },
+  {
+    "iter": 4,
+    "sus_score": 95.0,
+    "axe_penalty": 0.0,
+    "composite_score": 95.0,
+    "sus_answers": [
+      5,
+      1,
+      5,
+      1,
+      4,
+      2,
+      5,
+      1,
+      5,
+      1
+    ],
+    "feedback": "Excellent. The page now reads at a glance, hierarchy guides the eye to the CTA, and supporting content reinforces the primary action. No a11y issues.",
+    "suggestions": [
+      "Optional: tighten copy in the second section for mobile."
+    ]
+  }
+]</code></pre>
+      </details>
+    </section>
+
+    <footer>
+      <p>
+        An autoresearch-style experiment. Generator and critic are both Claude
+        Sonnet. The run shown is seeded — no API calls were made to render this
+        page. <a href="https://github.com/jessholbrook/design-gan">Source on GitHub</a>.
+      </p>
+    </footer>
+  </div>
+</body>
+</html>

@@ -51,9 +51,11 @@ def run(
     )
     result = orchestrator.run_loop_sync(cfg, console=console)
     console.rule("[bold green]Done")
+    best_score_txt = f"{result.best_score:.1f}" if result.best_score is not None else "—"
+    best_iter_txt = str(result.best_iter) if result.best_iter else "—"
     console.print(
-        f"run_id={result.run_id}  best_iter={result.best_iter}  "
-        f"best_score={result.best_score:.1f}  iters={result.iterations}  "
+        f"run_id={result.run_id}  best_iter={best_iter_txt}  "
+        f"best_score={best_score_txt}  iters={result.iterations}  "
         f"status={result.status}"
     )
 

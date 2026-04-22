@@ -191,7 +191,6 @@ def run_detail(run_id: int) -> str:
     attrs = (
         f' data-run-id="{run_id}" data-running="{"1" if running else "0"}"'
         f' data-last-iter="{iters[-1]["iter"] if iters else 0}"'
-        f' data-max-iters="{run.get("max_iters") or ""}"'
     )
     cur_iter = run.get("current_iter")
     cur_phase = run.get("current_phase")
@@ -244,10 +243,17 @@ def run_detail(run_id: int) -> str:
 
 @app.get("/static/{name}")
 def static_file(name: str) -> FileResponse:
-    path = _STATIC_DIR / name
-    if not path.is_file() or ".." in name:
+    # Resolve both sides and require the final path stay inside the static dir.
+    # This defeats both `..` traversal and absolute-path escapes (`Path(a) / "/b"`
+    # silently discards `a`), which a naive substring check would miss.
+    candidate = (_STATIC_DIR / name).resolve()
+    try:
+        candidate.relative_to(_STATIC_DIR.resolve())
+    except ValueError:
         raise HTTPException(404)
-    return FileResponse(path)
+    if not candidate.is_file():
+        raise HTTPException(404)
+    return FileResponse(candidate)
 
 
 @app.get("/runs/{run_id}/iters/{it}/screenshot")

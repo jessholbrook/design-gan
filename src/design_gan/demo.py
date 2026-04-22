@@ -56,7 +56,7 @@ _ITERS = [
         "rgb": (170, 210, 160),
     },
     {
-        "sus_answers": [5, 1, 5, 1, 4, 2, 5, 1, 5, 1],  # SUS = 90
+        "sus_answers": [5, 1, 5, 1, 4, 2, 5, 1, 5, 1],  # SUS = 95
         "feedback": (
             "Excellent. The page now reads at a glance, hierarchy guides the eye to the "
             "CTA, and supporting content reinforces the primary action. No a11y issues."

@@ -34,7 +34,7 @@ class LoopConfig:
 class LoopResult:
     run_id: int
     best_iter: int
-    best_score: float
+    best_score: float | None
     iterations: int
     status: str  # "converged" | "exhausted" | "errored"
 
@@ -49,7 +49,7 @@ async def run_loop(
     run_dir = cfg.runs_dir / f"run_{run_id:04d}"
     run_dir.mkdir(parents=True, exist_ok=True)
 
-    best_score = -1.0
+    best_score: float | None = None
     best_iter = 0
     stale = 0
     prev_html: str | None = None
@@ -133,7 +133,7 @@ async def run_loop(
             )
             console.print(f"[dim]feedback:[/dim] {sus.feedback}")
 
-            if result.composite > best_score + cfg.tolerance:
+            if best_score is None or result.composite > best_score + cfg.tolerance:
                 best_score = result.composite
                 best_iter = i
                 stale = 0
@@ -157,7 +157,10 @@ async def run_loop(
         console.print(f"[red]run errored: {e}[/red]")
         console.print(traceback.format_exc())
     finally:
-        store.finish_run(run_id, best_iter, best_score, status, error=final_error)
+        # If no iteration ever completed, persist nulls rather than a sentinel
+        # 0/0.0 that the UI would otherwise render as a real score.
+        final_best_iter = best_iter if best_iter > 0 else None
+        store.finish_run(run_id, final_best_iter, best_score, status, error=final_error)
 
     return LoopResult(
         run_id=run_id,

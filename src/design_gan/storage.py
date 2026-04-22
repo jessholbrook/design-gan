@@ -99,8 +99,8 @@ class Storage:
     def finish_run(
         self,
         run_id: int,
-        best_iter: int,
-        best_score: float,
+        best_iter: int | None,
+        best_score: float | None,
         status: str,
         error: str | None = None,
     ) -> None:

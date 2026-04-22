@@ -118,7 +118,7 @@ def _build_user_message(
     )
 
 
-async def _run_once(model: str, user_message: str) -> str:
+async def _run_once(model: str, user_message: str, screenshot_dir: Path) -> str:
     final: str | None = None
     async for msg in query(
         prompt=user_message,
@@ -126,7 +126,13 @@ async def _run_once(model: str, user_message: str) -> str:
             system_prompt=CRITIC_SYSTEM,
             model=model,
             allowed_tools=["Read"],
+            # Scope the Read tool so it can only see the screenshot's directory.
+            # Combined with bypassPermissions this keeps the critic from
+            # wandering the filesystem if a brief tries to coax it.
+            add_dirs=[str(screenshot_dir)],
             permission_mode="bypassPermissions",
+            # One Read + one final answer is all we need. Short-circuit runaway loops.
+            max_turns=4,
         ),
     ):
         if isinstance(msg, ResultMessage):
@@ -147,10 +153,11 @@ async def critique(
 ) -> SUSResponse:
     """Run the critic against a rendered site; returns structured SUS response."""
     user_message = _build_user_message(screenshot_path, dom_html, axe_violations, brief)
+    screenshot_dir = screenshot_path.parent
 
     last_error: Exception | None = None
     for attempt in range(2):
-        raw = await _run_once(model, user_message)
+        raw = await _run_once(model, user_message, screenshot_dir)
         try:
             payload = _extract_json(raw)
             return SUSResponse.model_validate_json(payload)
