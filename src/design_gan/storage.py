@@ -10,6 +10,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Iterator
 
+SECONDS_PER_DAY = 86_400
+
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS runs (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -22,6 +24,8 @@ CREATE TABLE IF NOT EXISTS runs (
     status TEXT NOT NULL DEFAULT 'running',
     current_iter INTEGER,
     current_phase TEXT,
+    current_phase_at REAL,
+    total_cost_usd REAL NOT NULL DEFAULT 0.0,
     error TEXT
 );
 
@@ -38,10 +42,12 @@ CREATE TABLE IF NOT EXISTS iterations (
     feedback TEXT NOT NULL,
     suggestions TEXT NOT NULL,
     artifacts_dir TEXT NOT NULL,
+    cost_usd REAL NOT NULL DEFAULT 0.0,
     UNIQUE(run_id, iter)
 );
 
 CREATE INDEX IF NOT EXISTS iterations_run ON iterations(run_id);
+CREATE INDEX IF NOT EXISTS iterations_created ON iterations(created_at);
 """
 
 
@@ -57,6 +63,7 @@ class IterationRecord:
     feedback: str
     suggestions: list[str]
     artifacts_dir: str
+    cost_usd: float = 0.0
 
 
 class Storage:
@@ -70,13 +77,20 @@ class Storage:
     @staticmethod
     def _migrate(conn: sqlite3.Connection) -> None:
         """Add columns added to an existing deployment."""
-        cols = {row["name"] for row in conn.execute("PRAGMA table_info(runs)")}
-        if "current_iter" not in cols:
-            conn.execute("ALTER TABLE runs ADD COLUMN current_iter INTEGER")
-        if "current_phase" not in cols:
-            conn.execute("ALTER TABLE runs ADD COLUMN current_phase TEXT")
-        if "error" not in cols:
-            conn.execute("ALTER TABLE runs ADD COLUMN error TEXT")
+        run_cols = {row["name"] for row in conn.execute("PRAGMA table_info(runs)")}
+        for col, ddl in (
+            ("current_iter", "INTEGER"),
+            ("current_phase", "TEXT"),
+            ("current_phase_at", "REAL"),
+            ("total_cost_usd", "REAL NOT NULL DEFAULT 0.0"),
+            ("error", "TEXT"),
+        ):
+            if col not in run_cols:
+                conn.execute(f"ALTER TABLE runs ADD COLUMN {col} {ddl}")
+
+        iter_cols = {row["name"] for row in conn.execute("PRAGMA table_info(iterations)")}
+        if "cost_usd" not in iter_cols:
+            conn.execute("ALTER TABLE iterations ADD COLUMN cost_usd REAL NOT NULL DEFAULT 0.0")
 
     @contextmanager
     def _conn(self) -> Iterator[sqlite3.Connection]:
@@ -107,18 +121,23 @@ class Storage:
         with self._conn() as c:
             c.execute(
                 "UPDATE runs SET ended_at=?, best_iter=?, best_score=?, status=?, "
-                "current_iter=NULL, current_phase=NULL, error=? WHERE id=?",
+                "current_iter=NULL, current_phase=NULL, current_phase_at=NULL, "
+                "error=? WHERE id=?",
                 (time.time(), best_iter, best_score, status, error, run_id),
             )
 
     def update_progress(
         self, run_id: int, current_iter: int | None, current_phase: str | None
     ) -> None:
-        """Set the in-flight iteration/phase so the viewer can report live progress."""
+        """Set the in-flight iteration/phase and stamp it with the current time.
+
+        The timestamp lets sweep_abandoned_runs distinguish slow-but-alive runs
+        from crashed-out ones without having to poll.
+        """
         with self._conn() as c:
             c.execute(
-                "UPDATE runs SET current_iter=?, current_phase=? WHERE id=?",
-                (current_iter, current_phase, run_id),
+                "UPDATE runs SET current_iter=?, current_phase=?, current_phase_at=? WHERE id=?",
+                (current_iter, current_phase, time.time(), run_id),
             )
 
     def save_iteration(self, rec: IterationRecord) -> None:
@@ -127,9 +146,10 @@ class Storage:
                 """
                 INSERT INTO iterations(
                     run_id, iter, created_at, html, sus_score, axe_penalty,
-                    composite_score, sus_answers, feedback, suggestions, artifacts_dir
+                    composite_score, sus_answers, feedback, suggestions, artifacts_dir,
+                    cost_usd
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     rec.run_id,
@@ -143,7 +163,13 @@ class Storage:
                     rec.feedback,
                     json.dumps(rec.suggestions),
                     rec.artifacts_dir,
+                    rec.cost_usd,
                 ),
+            )
+            # Roll iteration cost up onto the parent run for cheap dashboard reads.
+            c.execute(
+                "UPDATE runs SET total_cost_usd = total_cost_usd + ? WHERE id=?",
+                (rec.cost_usd, rec.run_id),
             )
 
     def list_runs(self) -> list[dict[str, Any]]:
@@ -169,3 +195,44 @@ class Storage:
                 d["suggestions"] = json.loads(d["suggestions"])
                 out.append(d)
             return out
+
+    def cost_usd_since(self, epoch: float) -> float:
+        """Sum of iterations.cost_usd for iters created since `epoch`."""
+        with self._conn() as c:
+            row = c.execute(
+                "SELECT COALESCE(SUM(cost_usd), 0.0) AS total "
+                "FROM iterations WHERE created_at >= ?",
+                (epoch,),
+            ).fetchone()
+            return float(row["total"] or 0.0)
+
+    def cost_usd_last_24h(self) -> float:
+        return self.cost_usd_since(time.time() - SECONDS_PER_DAY)
+
+    def sweep_abandoned_runs(self, timeout_seconds: float) -> list[int]:
+        """Mark status='running' rows with no recent heartbeat as errored.
+
+        A "heartbeat" is `current_phase_at` — set by update_progress on every
+        phase transition. Rows that have been running without a phase stamp
+        for longer than `timeout_seconds` (or never got one) are presumed
+        dead (e.g. the machine restarted mid-run). Returns the swept ids.
+        """
+        cutoff = time.time() - timeout_seconds
+        with self._conn() as c:
+            rows = c.execute(
+                "SELECT id FROM runs WHERE status='running' AND "
+                "(current_phase_at IS NULL AND created_at < ? "
+                " OR current_phase_at IS NOT NULL AND current_phase_at < ?)",
+                (cutoff, cutoff),
+            ).fetchall()
+            ids = [r["id"] for r in rows]
+            if ids:
+                qmarks = ",".join("?" * len(ids))
+                c.execute(
+                    f"UPDATE runs SET status='errored', ended_at=?, "
+                    f"current_iter=NULL, current_phase=NULL, current_phase_at=NULL, "
+                    f"error='abandoned: no heartbeat for {int(timeout_seconds)}s' "
+                    f"WHERE id IN ({qmarks})",
+                    (time.time(), *ids),
+                )
+            return ids

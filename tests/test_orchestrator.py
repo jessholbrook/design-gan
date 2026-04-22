@@ -41,13 +41,19 @@ class FakeRun:
         self.generated_requests: list[Any] = []
         self.critiqued_briefs: list[str] = []
 
-    def install(self, monkeypatch: pytest.MonkeyPatch) -> None:
+    def install(
+        self, monkeypatch: pytest.MonkeyPatch, *, gen_cost: float = 0.0,
+        critic_cost: float = 0.0,
+    ) -> None:
         async def fake_generate(model, req):
             self.iter += 1
             self.generated_requests.append(req)
             if self.iter in self.fail_on and self.fail_phase == "generate":
                 raise RuntimeError(f"boom generate iter {self.iter}")
-            return f"<!doctype html><html><body>iter {self.iter}</body></html>"
+            return (
+                f"<!doctype html><html><body>iter {self.iter}</body></html>",
+                gen_cost,
+            )
 
         async def fake_render(html, viewport=(1280, 800)):
             if self.iter in self.fail_on and self.fail_phase == "render":
@@ -72,10 +78,13 @@ class FakeRun:
             if self.iter in self.fail_on and self.fail_phase == "critique":
                 raise RuntimeError(f"boom critique iter {self.iter}")
             idx = self.iter - 1
-            return SUSResponse(
-                sus=self.scores[idx],
-                feedback=self.feedbacks[idx],
-                suggestions=self.suggestions[idx],
+            return (
+                SUSResponse(
+                    sus=self.scores[idx],
+                    feedback=self.feedbacks[idx],
+                    suggestions=self.suggestions[idx],
+                ),
+                critic_cost,
             )
 
         monkeypatch.setattr(orchestrator.generator, "generate", fake_generate)
@@ -209,6 +218,55 @@ class TestArtifacts:
         iters = store.iterations_for_run(1)
         assert iters[0]["feedback"] == "great job"
         assert iters[0]["suggestions"] == ["ship it"]
+
+
+class TestBudget:
+    """Daily-budget guard aborts the loop before spending more."""
+
+    def test_breaks_loop_when_budget_reached(
+        self, cfg: orchestrator.LoopConfig, monkeypatch: pytest.MonkeyPatch
+    ):
+        cfg.daily_budget_usd = 1.00  # very tight
+        cfg.max_iters = 5
+        cfg.patience = 5
+        # Each iteration costs $0.40 (gen) + $0.20 (critic) = $0.60.
+        # Iter 1 spends $0.60 (used $0.60). Iter 2 starts at $0.60 < $1.00
+        # so proceeds, spends another $0.60, total $1.20. Iter 3 sees
+        # $1.20 >= $1.00 and short-circuits.
+        scores = [[5, 1] * 5] * 5
+        FakeRun(scores=scores).install(monkeypatch, gen_cost=0.40, critic_cost=0.20)
+        result = orchestrator.run_loop_sync(cfg)
+        assert result.status == "budget_exhausted"
+        # Exactly 2 iters committed to DB.
+        store = storage.Storage(cfg.db_path)
+        assert len(store.iterations_for_run(result.run_id)) == 2
+
+    def test_no_budget_means_no_check(
+        self, cfg: orchestrator.LoopConfig, monkeypatch: pytest.MonkeyPatch
+    ):
+        cfg.daily_budget_usd = None
+        cfg.max_iters = 2
+        cfg.patience = 2
+        FakeRun(scores=[[5, 1] * 5] * 2).install(
+            monkeypatch, gen_cost=5.00, critic_cost=5.00
+        )
+        result = orchestrator.run_loop_sync(cfg)
+        # Both iters ran despite spending $20 — no cap.
+        assert result.iterations == 2
+        assert result.status in ("converged", "exhausted")
+
+    def test_iter_cost_persisted(
+        self, cfg: orchestrator.LoopConfig, monkeypatch: pytest.MonkeyPatch
+    ):
+        cfg.max_iters = 1
+        cfg.patience = 1
+        FakeRun(scores=[[5, 1] * 5]).install(monkeypatch, gen_cost=0.30, critic_cost=0.15)
+        orchestrator.run_loop_sync(cfg)
+        store = storage.Storage(cfg.db_path)
+        iters = store.iterations_for_run(1)
+        assert iters[0]["cost_usd"] == pytest.approx(0.45)
+        run = store.get_run(1)
+        assert run["total_cost_usd"] == pytest.approx(0.45)
 
 
 class TestFeedbackFlow:

@@ -162,11 +162,11 @@ class TestStartTokenGate:
     def test_config_reports_gate(self, gated_client: TestClient):
         r = gated_client.get("/api/config")
         assert r.status_code == 200
-        assert r.json() == {"requires_token": True}
+        assert r.json()["requires_token"] is True
 
     def test_config_reports_no_gate_by_default(self, client: TestClient):
         r = client.get("/api/config")
-        assert r.json() == {"requires_token": False}
+        assert r.json()["requires_token"] is False
 
     def test_missing_token_rejected(self, gated_client: TestClient):
         r = gated_client.post("/api/runs", json={"brief": "x"})
@@ -215,6 +215,84 @@ class TestStartTokenGate:
         assert gated_client.get("/").status_code == 200
         assert gated_client.get("/api/runs").status_code == 200
         assert gated_client.get("/runs/1").status_code == 200
+
+
+class TestBudgetGate:
+    """Rejects POST /api/runs when the 24h spend has hit the cap."""
+
+    @pytest.fixture
+    def budgeted_client(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> TestClient:
+        monkeypatch.setenv("DESIGN_GAN_RUNS_DIR", str(tmp_path))
+        monkeypatch.setenv("DESIGN_GAN_DAILY_BUDGET_USD", "1.00")
+        from design_gan import viewer
+        seed_demo(tmp_path)
+        return TestClient(viewer.app)
+
+    def test_config_reports_budget(self, budgeted_client: TestClient):
+        r = budgeted_client.get("/api/config").json()
+        assert r["daily_budget_usd"] == 1.0
+        assert r["budget_used_24h_usd"] == 0.0
+        assert r["budget_remaining_usd"] == 1.0
+
+    def test_over_budget_returns_429(
+        self, budgeted_client: TestClient, tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ):
+        # Force a big recent cost into the DB by inserting a synthetic iter.
+        from design_gan.storage import IterationRecord, Storage
+        store = Storage(tmp_path / "design-gan.sqlite")
+        store.save_iteration(IterationRecord(
+            run_id=1, iter=99, html="<html></html>",
+            sus_score=0.0, axe_penalty=0.0, composite_score=0.0,
+            sus_answers=[3]*10, feedback="f", suggestions=["s"],
+            artifacts_dir=str(tmp_path), cost_usd=2.50,
+        ))
+        r = budgeted_client.post("/api/runs", json={"brief": "x"})
+        assert r.status_code == 429
+        body = r.json()["detail"]
+        assert body["error"] == "daily_budget_exhausted"
+
+    def test_under_budget_proceeds(
+        self, budgeted_client: TestClient, monkeypatch: pytest.MonkeyPatch
+    ):
+        from design_gan import orchestrator
+        monkeypatch.setattr(orchestrator, "run_loop_sync", lambda *a, **kw: None)
+        r = budgeted_client.post("/api/runs", json={"brief": "x"})
+        assert r.status_code == 200
+
+    def test_no_budget_means_no_check(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ):
+        monkeypatch.setenv("DESIGN_GAN_RUNS_DIR", str(tmp_path))
+        # budget env unset
+        from design_gan import viewer, orchestrator
+        seed_demo(tmp_path)
+        monkeypatch.setattr(orchestrator, "run_loop_sync", lambda *a, **kw: None)
+        c = TestClient(viewer.app)
+        assert c.get("/api/config").json()["daily_budget_usd"] is None
+        r = c.post("/api/runs", json={"brief": "x"})
+        assert r.status_code == 200
+
+
+class TestBootSweep:
+    def test_startup_clears_running_runs(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ):
+        monkeypatch.setenv("DESIGN_GAN_RUNS_DIR", str(tmp_path))
+        # Pre-seed a stuck "running" row before the app boots.
+        from design_gan.storage import Storage
+        store = Storage(tmp_path / "design-gan.sqlite")
+        rid = store.create_run("ghost", "m")
+        from design_gan import viewer
+        with TestClient(viewer.app) as client:
+            # Opening TestClient triggers the startup event.
+            pass
+        # The ghost run should now be errored.
+        run = store.get_run(rid)
+        assert run["status"] == "errored"
+        assert "abandoned" in (run["error"] or "")
 
 
 class TestErroredRunDisplay:

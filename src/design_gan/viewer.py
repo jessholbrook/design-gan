@@ -9,6 +9,8 @@ import json
 import os
 from pathlib import Path
 
+from contextlib import asynccontextmanager
+
 from fastapi import FastAPI, Header, HTTPException
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, StreamingResponse
 from pydantic import BaseModel, Field
@@ -30,11 +32,46 @@ def _required_start_token() -> str | None:
     return tok if tok else None
 
 
+def _daily_budget_usd() -> float | None:
+    """Daily (rolling 24h) spending cap. Unset or <= 0 disables the gate."""
+    raw = os.environ.get("DESIGN_GAN_DAILY_BUDGET_USD")
+    if not raw:
+        return None
+    try:
+        v = float(raw)
+    except ValueError:
+        return None
+    return v if v > 0 else None
+
+
+# Runs with no heartbeat for this long are presumed dead (machine restart,
+# OOM kill, etc.). Sweep clears them at boot and could be called periodically.
+ABANDONED_RUN_TIMEOUT_SECONDS = int(
+    os.environ.get("DESIGN_GAN_ABANDONED_TIMEOUT_S", "600")
+)
+
+
 def _store() -> storage.Storage:
     return storage.Storage(_runs_dir() / "design-gan.sqlite")
 
 
-app = FastAPI(title="design-gan viewer")
+@asynccontextmanager
+async def _lifespan(app_: FastAPI):
+    """Boot-time cleanup: any run still marked 'running' is a ghost from a
+    prior machine (restart, OOM, etc.). Mark them errored so the UI doesn't
+    show a spinner that never resolves."""
+    import logging
+    log = logging.getLogger(__name__)
+    try:
+        swept = _store().sweep_abandoned_runs(0)
+        if swept:
+            log.info("swept %d abandoned run(s) on boot: %s", len(swept), swept)
+    except Exception:
+        log.exception("startup sweep failed")
+    yield
+
+
+app = FastAPI(title="design-gan viewer", lifespan=_lifespan)
 
 
 # ---------- HTML helpers ----------
@@ -78,6 +115,7 @@ def _status_badge(status: str) -> str:
         "converged": "converged",
         "exhausted": "exhausted",
         "errored": "errored",
+        "budget_exhausted": "errored",
     }.get(status, "unknown")
     return f'<span class="status status-{cls}">{html.escape(status)}</span>'
 
@@ -336,8 +374,17 @@ def _check_start_token(req: StartRunRequest, authorization: str | None) -> None:
 
 @app.get("/api/config")
 def api_config() -> JSONResponse:
-    """Lets the UI know whether to show the token field without exposing the token."""
-    return JSONResponse({"requires_token": _required_start_token() is not None})
+    """Surface gating + budget state so the UI can show accurate affordances."""
+    budget = _daily_budget_usd()
+    used = _store().cost_usd_last_24h() if budget is not None else 0.0
+    return JSONResponse({
+        "requires_token": _required_start_token() is not None,
+        "daily_budget_usd": budget,
+        "budget_used_24h_usd": round(used, 4),
+        "budget_remaining_usd": (
+            round(max(0.0, budget - used), 4) if budget is not None else None
+        ),
+    })
 
 
 @app.post("/api/runs")
@@ -345,6 +392,27 @@ async def start_run(
     req: StartRunRequest, authorization: str | None = Header(default=None)
 ) -> JSONResponse:
     _check_start_token(req, authorization)
+
+    # Reject up-front when the daily budget is already spent. The orchestrator
+    # re-checks between iterations, so a single run starting with headroom
+    # can at worst overshoot by one iteration's cost.
+    budget = _daily_budget_usd()
+    if budget is not None:
+        used = _store().cost_usd_last_24h()
+        if used >= budget:
+            raise HTTPException(
+                status_code=429,
+                detail={
+                    "error": "daily_budget_exhausted",
+                    "daily_budget_usd": budget,
+                    "used_24h_usd": round(used, 4),
+                    "message": (
+                        f"Daily budget of ${budget:.2f} is spent "
+                        f"(${used:.2f} used in the last 24h). Try again tomorrow."
+                    ),
+                },
+            )
+
     runs_dir = _runs_dir()
     model = req.model or _default_model()
     cfg = orchestrator.LoopConfig(
@@ -355,6 +423,7 @@ async def start_run(
         max_iters=req.max_iters,
         patience=req.patience,
         tolerance=req.tolerance,
+        daily_budget_usd=budget,
     )
     # Pre-create the run so we can return its id immediately.
     run_id = _store().create_run(req.brief, model)

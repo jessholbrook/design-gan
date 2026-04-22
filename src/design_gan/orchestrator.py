@@ -28,6 +28,9 @@ class LoopConfig:
     patience: int = 3  # stop after N iters without improvement > tolerance
     tolerance: float = 1.0  # point improvement below this counts as no progress
     viewport: tuple[int, int] = (1280, 800)
+    # Hard stop when cumulative iteration cost over the last 24h crosses this.
+    # Checked before each iteration. None disables the check (local / CLI use).
+    daily_budget_usd: float | None = None
 
 
 @dataclass
@@ -36,7 +39,7 @@ class LoopResult:
     best_iter: int
     best_score: float | None
     iterations: int
-    status: str  # "converged" | "exhausted" | "errored"
+    status: str  # "converged" | "exhausted" | "errored" | "budget_exhausted"
 
 
 async def run_loop(
@@ -62,13 +65,28 @@ async def run_loop(
 
     try:
         for i in range(1, cfg.max_iters + 1):
+            # Budget gate: consult DB before each iteration so a mid-run cost
+            # spike still trips the circuit. A single in-flight iteration can
+            # overshoot by at most its own cost.
+            if cfg.daily_budget_usd is not None:
+                used = store.cost_usd_last_24h()
+                if used >= cfg.daily_budget_usd:
+                    status = "budget_exhausted"
+                    final_error = (
+                        f"daily budget exhausted before iter {i}: "
+                        f"${used:.2f} used of ${cfg.daily_budget_usd:.2f}"
+                    )
+                    console.print(f"[red]{final_error}[/red]")
+                    break
+
             console.rule(f"[bold cyan]Run {run_id} iter {i}/{cfg.max_iters}")
 
+            iter_cost_usd = 0.0
             try:
                 # --- generate -----------------------------------------------
                 store.update_progress(run_id, i, PHASE_GENERATING)
                 console.print("[dim]generating...[/dim]")
-                html = await generator.generate(
+                html, gen_cost = await generator.generate(
                     cfg.model,
                     generator.GenerationRequest(
                         brief=cfg.brief,
@@ -77,6 +95,7 @@ async def run_loop(
                         suggestions=prev_suggestions,
                     ),
                 )
+                iter_cost_usd += gen_cost
 
                 iter_dir = run_dir / f"iter_{i:03d}"
                 iter_dir.mkdir(parents=True, exist_ok=True)
@@ -91,13 +110,14 @@ async def run_loop(
                 # --- critique ----------------------------------------------
                 store.update_progress(run_id, i, PHASE_CRITIQUING)
                 console.print("[dim]critiquing...[/dim]")
-                sus = await critic.critique(
+                sus, crit_cost = await critic.critique(
                     cfg.model,
                     screenshot_path=artifacts["screenshot"].resolve(),
                     dom_html=render.dom_html,
                     axe_violations=render.axe_violations,
                     brief=cfg.brief,
                 )
+                iter_cost_usd += crit_cost
 
                 result = scorer.score(list(sus.sus), render.axe_violations)
                 store.save_iteration(
@@ -112,6 +132,7 @@ async def run_loop(
                         feedback=sus.feedback,
                         suggestions=sus.suggestions,
                         artifacts_dir=str(iter_dir),
+                        cost_usd=iter_cost_usd,
                     )
                 )
             except Exception as e:
@@ -129,7 +150,8 @@ async def run_loop(
             console.print(
                 f"[bold]score[/bold]: SUS={result.sus:.1f}  "
                 f"a11y_penalty={result.axe_penalty:.1f}  "
-                f"[green]composite={result.composite:.1f}[/green]"
+                f"[green]composite={result.composite:.1f}[/green]  "
+                f"[dim]cost=${iter_cost_usd:.3f}[/dim]"
             )
             console.print(f"[dim]feedback:[/dim] {sus.feedback}")
 

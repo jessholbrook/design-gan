@@ -63,9 +63,10 @@ def _extract_html(text: str) -> str:
     return text.strip()
 
 
-async def generate(model: str, req: GenerationRequest) -> str:
-    """Generate a single-page site. Returns raw HTML."""
+async def generate(model: str, req: GenerationRequest) -> tuple[str, float]:
+    """Generate a single-page site. Returns (html, cost_usd)."""
     final: str | None = None
+    cost_usd: float = 0.0
     async for msg in query(
         prompt=_build_user_message(req),
         options=ClaudeAgentOptions(
@@ -78,6 +79,7 @@ async def generate(model: str, req: GenerationRequest) -> str:
             if msg.is_error:
                 raise RuntimeError(f"Generator run failed: {msg.result!r}")
             final = msg.result
+            cost_usd = msg.total_cost_usd or 0.0
     if not final:
         raise RuntimeError("Generator produced no result.")
     html = _extract_html(final)
@@ -86,4 +88,4 @@ async def generate(model: str, req: GenerationRequest) -> str:
             f"Generator output exceeded {MAX_HTML_BYTES} bytes "
             f"({len(html)} chars) — likely runaway generation."
         )
-    return html
+    return html, cost_usd

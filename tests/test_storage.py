@@ -15,7 +15,12 @@ def store(tmp_path: Path) -> Storage:
     return Storage(tmp_path / "test.sqlite")
 
 
-def _sample_record(run_id: int, iter_num: int, composite: float = 50.0) -> IterationRecord:
+def _sample_record(
+    run_id: int,
+    iter_num: int,
+    composite: float = 50.0,
+    cost_usd: float = 0.0,
+) -> IterationRecord:
     return IterationRecord(
         run_id=run_id,
         iter=iter_num,
@@ -27,6 +32,7 @@ def _sample_record(run_id: int, iter_num: int, composite: float = 50.0) -> Itera
         feedback="meh",
         suggestions=["do better"],
         artifacts_dir=f"/tmp/run_{run_id:04d}/iter_{iter_num:03d}",
+        cost_usd=cost_usd,
     )
 
 
@@ -192,3 +198,66 @@ class TestIterations:
         store.save_iteration(_sample_record(r2, 1))
         assert len(store.iterations_for_run(r1)) == 1
         assert len(store.iterations_for_run(r2)) == 1
+
+
+class TestCostAccounting:
+    def test_cost_usd_since_sums_iterations(self, store: Storage):
+        rid = store.create_run("b", "m")
+        store.save_iteration(_sample_record(rid, 1, cost_usd=0.30))
+        store.save_iteration(_sample_record(rid, 2, cost_usd=0.25))
+        assert store.cost_usd_last_24h() == pytest.approx(0.55)
+
+    def test_cost_usd_since_respects_cutoff(self, store: Storage, monkeypatch):
+        import time
+        rid = store.create_run("b", "m")
+        store.save_iteration(_sample_record(rid, 1, cost_usd=1.0))
+        now = time.time()
+        # Iteration was created within the last second; a cutoff in the future
+        # excludes it.
+        assert store.cost_usd_since(now + 60) == 0.0
+
+    def test_total_cost_rolls_up_onto_run(self, store: Storage):
+        rid = store.create_run("b", "m")
+        store.save_iteration(_sample_record(rid, 1, cost_usd=0.10))
+        store.save_iteration(_sample_record(rid, 2, cost_usd=0.20))
+        assert store.get_run(rid)["total_cost_usd"] == pytest.approx(0.30)
+
+
+class TestSweep:
+    def test_sweep_marks_running_run_without_heartbeat(self, store: Storage):
+        rid = store.create_run("b", "m")
+        # No update_progress call -> current_phase_at is NULL.
+        # With created_at in the past relative to `timeout=0`, sweep picks it up.
+        swept = store.sweep_abandoned_runs(0)
+        assert rid in swept
+        assert store.get_run(rid)["status"] == "errored"
+        assert "abandoned" in (store.get_run(rid)["error"] or "")
+
+    def test_sweep_leaves_recent_heartbeats_alone(self, store: Storage):
+        rid = store.create_run("b", "m")
+        store.update_progress(rid, 1, "generating")
+        # 60s timeout; heartbeat just happened -> not swept.
+        swept = store.sweep_abandoned_runs(60)
+        assert swept == []
+        assert store.get_run(rid)["status"] == "running"
+
+    def test_sweep_catches_stale_heartbeat(self, store: Storage):
+        import time
+        rid = store.create_run("b", "m")
+        store.update_progress(rid, 1, "generating")
+        # Force the heartbeat into the past.
+        with store._conn() as c:
+            c.execute(
+                "UPDATE runs SET current_phase_at=? WHERE id=?",
+                (time.time() - 1000, rid),
+            )
+        swept = store.sweep_abandoned_runs(60)
+        assert rid in swept
+        assert store.get_run(rid)["status"] == "errored"
+
+    def test_sweep_does_not_touch_finished_runs(self, store: Storage):
+        rid = store.create_run("b", "m")
+        store.finish_run(rid, 1, 90.0, "converged")
+        swept = store.sweep_abandoned_runs(0)
+        assert swept == []
+        assert store.get_run(rid)["status"] == "converged"

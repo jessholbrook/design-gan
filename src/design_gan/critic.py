@@ -118,8 +118,11 @@ def _build_user_message(
     )
 
 
-async def _run_once(model: str, user_message: str, screenshot_dir: Path) -> str:
+async def _run_once(
+    model: str, user_message: str, screenshot_dir: Path
+) -> tuple[str, float]:
     final: str | None = None
+    cost_usd: float = 0.0
     async for msg in query(
         prompt=user_message,
         options=ClaudeAgentOptions(
@@ -139,9 +142,10 @@ async def _run_once(model: str, user_message: str, screenshot_dir: Path) -> str:
             if msg.is_error:
                 raise RuntimeError(f"Critic run failed: {msg.result!r}")
             final = msg.result
+            cost_usd = msg.total_cost_usd or 0.0
     if not final:
         raise RuntimeError("Critic produced no result.")
-    return final
+    return final, cost_usd
 
 
 async def critique(
@@ -150,17 +154,22 @@ async def critique(
     dom_html: str,
     axe_violations: list[dict[str, Any]],
     brief: str,
-) -> SUSResponse:
-    """Run the critic against a rendered site; returns structured SUS response."""
+) -> tuple[SUSResponse, float]:
+    """Run the critic against a rendered site. Returns (SUSResponse, cost_usd).
+
+    cost_usd aggregates across retries so callers see the full spend.
+    """
     user_message = _build_user_message(screenshot_path, dom_html, axe_violations, brief)
     screenshot_dir = screenshot_path.parent
 
+    total_cost: float = 0.0
     last_error: Exception | None = None
     for attempt in range(2):
-        raw = await _run_once(model, user_message, screenshot_dir)
+        raw, cost = await _run_once(model, user_message, screenshot_dir)
+        total_cost += cost
         try:
             payload = _extract_json(raw)
-            return SUSResponse.model_validate_json(payload)
+            return SUSResponse.model_validate_json(payload), total_cost
         except (ValueError, ValidationError, json.JSONDecodeError) as e:
             last_error = e
             # On retry, nudge the model toward strict JSON.
