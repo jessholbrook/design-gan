@@ -1,0 +1,29 @@
+# Fly.io config. Run `fly launch --no-deploy` once to claim an app name, then
+# `fly volumes create design_gan_data --size 1 --region <your-region>` and
+# `fly secrets set ANTHROPIC_API_KEY=sk-ant-...`. Deploy with `fly deploy`.
+
+app = "design-gan"
+primary_region = "iad"
+
+[build]
+
+[env]
+  DESIGN_GAN_RUNS_DIR = "/data"
+
+[http_service]
+  internal_port = 8080
+  force_https = true
+  auto_start_machines = true
+  # Keep the machine running so in-progress runs don't get killed mid-loop.
+  auto_stop_machines = "off"
+  min_machines_running = 1
+
+[[mounts]]
+  source = "design_gan_data"
+  destination = "/data"
+
+[[vm]]
+  # Chromium + a Python server fit in 1GB; bump to 2GB if you see OOM kills.
+  memory = "1gb"
+  cpu_kind = "shared"
+  cpus = 1

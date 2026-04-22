@@ -1,0 +1,17 @@
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+.env
+.pytest_cache/
+.ruff_cache/
+
+# Run artifacts
+runs/
+runs_*/
+*.sqlite
+*.db
+
+# Playwright
+.playwright/
