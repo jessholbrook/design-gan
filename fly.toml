@@ -19,7 +19,11 @@ primary_region = "iad"
   min_machines_running = 1
 
 [[mounts]]
-  source = "design_gan_data"
+  # The deployed volume is named `data` — `fly launch` auto-renamed it from
+  # `design_gan_data` on first deploy. Keeping `source = "data"` attaches the
+  # existing volume (with persisted SQLite DB + run artifacts) rather than
+  # provisioning a fresh empty one.
+  source = "data"
   destination = "/data"
 
 [[vm]]

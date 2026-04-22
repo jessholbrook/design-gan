@@ -296,8 +296,9 @@
         next draft — until the composite score plateaus.
       </p>
       <div class="actions">
-        <a class="btn primary" href="https://github.com/jessholbrook/design-gan">View on GitHub</a>
-        <a class="btn" href="#the-run">Skip to the run &rarr;</a>
+        <a class="btn primary" href="https://design-gan.fly.dev/">Try the live app &rarr;</a>
+        <a class="btn" href="https://github.com/jessholbrook/design-gan">View on GitHub</a>
+        <a class="btn" href="#the-run">Skip to the run</a>
       </div>
 
       <div class="stats">
@@ -539,6 +540,11 @@
 
     <section id="run-it">
       <h2>Run it yourself</h2>
+      <p>
+        A live deploy is up at <a href="https://design-gan.fly.dev/"><code>design-gan.fly.dev</code></a> —
+        you can browse prior runs without anything, and start your own if you have the
+        shared access token (ask the owner). Or run the whole loop locally:
+      </p>
       <pre><code>pip install -e .
 playwright install chromium
 cp .env.example .env  # add your ANTHROPIC_API_KEY
@@ -549,7 +555,7 @@ design-gan viewer      # http://127.0.0.1:8000
 # Or one evolution loop from the terminal
 design-gan run "A landing page for a weekend cycling tour in rural Vermont."</code></pre>
       <p>
-        Source, setup details, and a Fly.io deploy config are in the
+        Source, setup details, and the Fly.io deploy config are in the
         <a href="https://github.com/jessholbrook/design-gan">GitHub repository</a>.
       </p>
 

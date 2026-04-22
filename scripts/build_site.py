@@ -18,6 +18,7 @@ from design_gan.demo import seed_demo
 from design_gan.storage import Storage
 
 REPO_URL = "https://github.com/jessholbrook/design-gan"
+LIVE_APP_URL = "https://design-gan.fly.dev/"
 
 # Fallback for runs_dir-style on-disk artifacts.
 ROOT = Path(__file__).resolve().parent.parent
@@ -208,6 +209,7 @@ def build(output_dir: Path = OUT_DIR) -> Path:
 
     html_doc = PAGE_TEMPLATE.format(
         repo_url=REPO_URL,
+        live_app_url=LIVE_APP_URL,
         brief=_escape(run["brief"].replace("DEMO: ", "")),
         best_score=f"{best['composite_score']:.0f}",
         first_score=f"{first['composite_score']:.0f}",
@@ -525,8 +527,9 @@ PAGE_TEMPLATE = r"""<!doctype html>
         next draft — until the composite score plateaus.
       </p>
       <div class="actions">
-        <a class="btn primary" href="{repo_url}">View on GitHub</a>
-        <a class="btn" href="#the-run">Skip to the run &rarr;</a>
+        <a class="btn primary" href="{live_app_url}">Try the live app &rarr;</a>
+        <a class="btn" href="{repo_url}">View on GitHub</a>
+        <a class="btn" href="#the-run">Skip to the run</a>
       </div>
 
       <div class="stats">
@@ -631,6 +634,11 @@ PAGE_TEMPLATE = r"""<!doctype html>
 
     <section id="run-it">
       <h2>Run it yourself</h2>
+      <p>
+        A live deploy is up at <a href="{live_app_url}"><code>design-gan.fly.dev</code></a> —
+        you can browse prior runs without anything, and start your own if you have the
+        shared access token (ask the owner). Or run the whole loop locally:
+      </p>
       <pre><code>pip install -e .
 playwright install chromium
 cp .env.example .env  # add your ANTHROPIC_API_KEY
@@ -641,7 +649,7 @@ design-gan viewer      # http://127.0.0.1:8000
 # Or one evolution loop from the terminal
 design-gan run "A landing page for a weekend cycling tour in rural Vermont."</code></pre>
       <p>
-        Source, setup details, and a Fly.io deploy config are in the
+        Source, setup details, and the Fly.io deploy config are in the
         <a href="{repo_url}">GitHub repository</a>.
       </p>
 

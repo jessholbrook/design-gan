@@ -36,6 +36,13 @@ class TestInitAndSchema:
         Storage(path)
         assert path.exists()
 
+    def test_accepts_str_path(self, tmp_path: Path):
+        # Callers sometimes pass strings (e.g. inline `fly ssh` one-liners).
+        # Storage should coerce rather than AttributeError on missing `.parent`.
+        path = str(tmp_path / "str-ctor.sqlite")
+        Storage(path)
+        assert Path(path).exists()
+
     def test_creates_parent_dirs(self, tmp_path: Path):
         path = tmp_path / "a" / "b" / "c" / "test.sqlite"
         Storage(path)
