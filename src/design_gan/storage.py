@@ -15,8 +15,9 @@ SECONDS_PER_DAY = 86_400
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS runs (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
-    brief TEXT NOT NULL,
+    brief TEXT NOT NULL,            -- for kind='design': the site brief; for kind='conversation': the goal
     model TEXT NOT NULL,
+    kind TEXT NOT NULL DEFAULT 'design',  -- 'design' | 'conversation'
     created_at REAL NOT NULL,
     ended_at REAL,
     best_iter INTEGER,
@@ -88,6 +89,7 @@ class Storage:
             ("current_phase_at", "REAL"),
             ("total_cost_usd", "REAL NOT NULL DEFAULT 0.0"),
             ("error", "TEXT"),
+            ("kind", "TEXT NOT NULL DEFAULT 'design'"),
         ):
             if col not in run_cols:
                 conn.execute(f"ALTER TABLE runs ADD COLUMN {col} {ddl}")
@@ -108,11 +110,11 @@ class Storage:
         finally:
             conn.close()
 
-    def create_run(self, brief: str, model: str) -> int:
+    def create_run(self, brief: str, model: str, kind: str = "design") -> int:
         with self._conn() as c:
             cur = c.execute(
-                "INSERT INTO runs(brief, model, created_at) VALUES (?, ?, ?)",
-                (brief, model, time.time()),
+                "INSERT INTO runs(brief, model, kind, created_at) VALUES (?, ?, ?, ?)",
+                (brief, model, kind, time.time()),
             )
             return cur.lastrowid
 
