@@ -20,9 +20,10 @@ def test_seed_demo_creates_run_with_four_iterations(tmp_path: Path):
     iters = store.iterations_for_run(run_id)
     assert len(iters) == 4
 
-    # Scores should be monotonically increasing on the seed data.
+    # Real run peaked at iter 3 then regressed, so composites are NOT
+    # monotonically increasing. But the peak should still beat the start.
     composites = [it["composite_score"] for it in iters]
-    assert composites == sorted(composites)
+    assert max(composites) > composites[0]
 
 
 def test_seed_demo_writes_artifacts_to_disk(tmp_path: Path):

@@ -1,193 +1,244 @@
-"""Seed a fake run with pre-baked iterations so the viewer has something to show
-without requiring an API key or Playwright install."""
+"""Seed a demo run so the viewer has real content to show without an API key.
+
+The artifacts bundled in ``demo_assets/`` were captured from an actual six-iteration
+run of the loop against the brief shown below. We ship the first four iterations
+(baseline through the peak-then-regression) because they tell the clearest story.
+"""
 
 from __future__ import annotations
 
-import struct
-import time
-import zlib
 from pathlib import Path
 
 from . import storage
 
-# 4 sample iterations with progressively better SUS scores and feedback.
+BRIEF = (
+    "DEMO: A landing page for a weekend cycling tour in rural Vermont "
+    "(captured from a real six-iteration run)."
+)
+
+_ASSETS = Path(__file__).parent / "demo_assets"
+
+
+# Real SUS answers, a11y penalty, critic feedback, and suggestions from
+# run_0001 iterations 1-4. Scores aren't stored here — they're computed from
+# sus_answers + synthetic violations shaped to match the recorded axe_penalty
+# (see _violations_matching_penalty below) so the saved composite matches what
+# the real critic produced.
 _ITERS = [
     {
-        "html": None,
-        "sus_answers": [2, 4, 2, 4, 2, 4, 2, 4, 2, 4],  # SUS = 0
+        "sus_answers": [2, 1, 4, 1, 4, 2, 5, 1, 4, 1],
+        "axe_penalty": 30.0,
         "feedback": (
-            "The page is a wall of unstyled text. The headline is lost, the call-to-action "
-            "blends into the paragraph, and there is no visual hierarchy whatsoever."
+            "Green Mountain Gravel is a well-crafted, visually cohesive landing page "
+            "with a clear information hierarchy, prominent CTAs, and an attractive "
+            "thematic design. The fixed nav, stat bar, and section structure make "
+            "orientation effortless for any user. However, axe-core flags 8 nodes "
+            "with insufficient color contrast (particularly the ~78% white subtitle "
+            "text over dark green and small uppercase labels) and 3 in-body links "
+            "indistinguishable without color, both of which meaningfully reduce "
+            "usability for low-vision or color-blind users. The site's scope is "
+            "inherently single-purpose, limiting 'frequent use' appeal, but within "
+            "its task domain it performs confidently."
         ),
         "suggestions": [
-            "Add a distinct hero section with a primary headline.",
-            "Promote the CTA to a visible button.",
-            "Introduce a typographic scale (h1/h2/body).",
-            "Apply a consistent color palette.",
+            "Fix the 8 color-contrast failures — raise subtitle and body text on the dark "
+            "green hero to at least 4.5:1; the rgba(255,255,255,.78) value (~3.8:1) is the "
+            "likely culprit, bumping opacity to 0.92+ would resolve it.",
+            "Make in-body links distinguishable without color (e.g., add an underline or "
+            "bold weight) to address the 3 link-in-text-block violations, ensuring they're "
+            "usable in grayscale or by color-blind visitors.",
+            "Add a visible focus indicator everywhere — nav links use `outline: none` on "
+            "hover/focus which removes the ring for keyboard users; replace with a "
+            "consistent amber or white outline.",
+            "The hero stat bar ('2 Days / 62 mi / 4,800' / 40 Riders Max / Sept') is "
+            "visually strong but cut off at the very bottom fold on typical viewports — "
+            "nudge it fully into view or add a subtle scroll-down hint so users discover it.",
+            "ARIA role mismatches on 3 nodes and an `aside` inside a landmark should be "
+            "cleaned up to avoid screen-reader confusion — audit the decorative SVG and "
+            "sidebar elements to ensure roles match their semantic purpose.",
+            "Consider adding a sticky 'Spots remaining' counter or a short social-proof "
+            "line (e.g., 'Sold out in 2024') near the CTA — the page's visual quality "
+            "earns trust but gives no urgency signal for a capacity-limited tour.",
         ],
-        "axe_count": 6,
-        "rgb": (232, 150, 150),
     },
     {
-        "sus_answers": [3, 3, 3, 3, 3, 3, 3, 3, 3, 3],  # SUS = 50
+        "sus_answers": [2, 2, 4, 1, 4, 2, 5, 1, 4, 1],
+        "axe_penalty": 15.0,
         "feedback": (
-            "A hero section and a visible CTA now exist, but spacing is cramped and "
-            "contrast on the CTA is borderline. Information density is still high."
+            "This is a polished, single-purpose landing page with strong visual hierarchy, "
+            "a coherent green-and-amber palette, and well-placed CTAs that communicate the "
+            "event's value quickly. The stats bar at the hero bottom is a smart design "
+            "choice that surfaces key decision-making facts without requiring a scroll. "
+            "The main drags on the score are the 5 axe-core color-contrast failures (real "
+            "barriers for low-vision users), the inherently low 'use frequently' ceiling "
+            "of an event registration page, and the limited confidence a first-time "
+            "visitor might have in the registration flow which isn't visible above the fold."
         ),
         "suggestions": [
-            "Increase vertical rhythm between sections.",
-            "Raise CTA contrast to at least 4.5:1.",
-            "Break the single-column layout into scannable chunks.",
+            "Resolve all 5 color-contrast violations flagged by axe-core — audit amber "
+            "text on dark-green backgrounds and light-gray body text on the cream "
+            "background, as these are the most likely offenders.",
+            "The 'SCROLL' cue is tiny and low-contrast against the hero background; "
+            "increase its size or replace with a more prominent animated chevron so users "
+            "know substantial content awaits below the fold.",
+            "Add a brief difficulty or fitness-level indicator near the '62 mi per day / "
+            "4,800 ft climb' stats — prospective riders need to self-qualify before "
+            "registering, and omitting this creates uncertainty.",
+            "The 'Register Now' nav CTA and 'Reserve Your Spot' hero CTA both lead to the "
+            "same action but use different labels — unify the wording to reduce cognitive "
+            "friction.",
+            "Include a visible price anchor (even a 'From $X' teaser) near the primary "
+            "CTA; without it, users may hesitate to click because they don't know what "
+            "commitment they're walking into.",
+            "The desktop nav has five links plus a CTA — ensure a hamburger or equivalent "
+            "exists for mobile viewports, as the current layout will overflow on small "
+            "screens.",
         ],
-        "axe_count": 3,
-        "rgb": (230, 200, 130),
     },
     {
-        "sus_answers": [4, 2, 4, 2, 4, 2, 4, 2, 4, 2],  # SUS = 75
+        "sus_answers": [2, 1, 5, 1, 4, 1, 5, 1, 4, 1],
+        "axe_penalty": 12.0,
         "feedback": (
-            "Layout is clean and the CTA is unambiguous. Typography is coherent, and "
-            "the site communicates its purpose within a glance. A11y is solid."
+            "Green Mountain Gravel is a well-crafted, single-purpose landing page with "
+            "strong visual hierarchy, a cohesive green-and-amber design system, and clear "
+            "CTAs that guide visitors straight to registration. The fixed nav with "
+            "descriptive section labels, an upfront price anchor, and an urgency signal "
+            "all reduce friction effectively. Four serious color-contrast violations "
+            "(flagged by axe-core) affect legibility for some users, and the hero headline "
+            "'Two Hundred Miles' appears to conflict with the stats bar showing '62 mi,' "
+            "which could momentarily undermine trust. Overall this is an above-average "
+            "marketing page that would perform well in a usability study, but small "
+            "inconsistencies and accessibility gaps keep it from a top score."
         ),
         "suggestions": [
-            "Add supporting social-proof or testimonials below the fold.",
-            "Consider an accent color for interactive elements.",
+            "Fix all 4 axe-core color-contrast violations — likely the small eyebrow/label "
+            "text and the price-anchor line against the dark hero background; bump type "
+            "size or darken/lighten the foreground color to achieve 4.5:1 minimum.",
+            "Reconcile the headline claim 'Two Hundred Miles' with the stats bar value of "
+            "'62 mi' — if 62 mi is per-day average, add a '/day' label; otherwise correct "
+            "the headline to avoid eroding trust for detail-oriented cyclists.",
+            "The stats bar is cut off at the bottom of the viewport in the initial view — "
+            "either reduce hero padding so the stats row is fully visible above the fold, "
+            "or surface the most critical stats (distance, elevation, dates) in the hero "
+            "body copy itself.",
+            "Add social proof (past-rider photos, 1–2 short testimonials, or a press "
+            "mention badge) in the hero or immediately below the fold — for a ~$449 "
+            "purchase decision, trust signals near the primary CTA materially increase "
+            "conversion.",
+            "The mobile hamburger menu is present in CSS but hidden on desktop; verify it "
+            "is fully keyboard- and screen-reader-accessible on small viewports, as the "
+            "nav links carry the site's entire wayfinding.",
+            "Consider adding a sticky 'spots remaining' micro-banner or progress bar once "
+            "users scroll past the hero, so the scarcity signal stays visible throughout "
+            "the longer scroll journey to the registration form.",
         ],
-        "axe_count": 1,
-        "rgb": (170, 210, 160),
     },
     {
-        "sus_answers": [5, 1, 5, 1, 4, 2, 5, 1, 5, 1],  # SUS = 95
+        "sus_answers": [3, 2, 4, 1, 4, 2, 5, 2, 4, 1],
+        "axe_penalty": 24.0,
         "feedback": (
-            "Excellent. The page now reads at a glance, hierarchy guides the eye to the "
-            "CTA, and supporting content reinforces the primary action. No a11y issues."
+            "The landing page is visually polished and well-structured for its narrow "
+            "purpose — a single-weekend cycling tour — with a clear hero, stat bar, and "
+            "prominent CTA. Navigation is minimal and purposeful, making the site very "
+            "easy to learn. The primary usability concern is the 8 color-contrast "
+            "violations (axe-core), most visibly the small amber-on-dark and medium-gray-"
+            "on-cream text combinations, which reduce readability for users with low "
+            "vision. Overall this is a competent, above-average marketing page that would "
+            "benefit from contrast fixes and slightly larger body text before it clears "
+            "a formal accessibility audit."
         ),
         "suggestions": [
-            "Optional: tighten copy in the second section for mobile.",
+            "Fix the 8 color-contrast violations: the slate-600 (#4b5563) text on cream "
+            "(#faf8f3) background falls below 4.5:1 — darken to slate-700 (#374151) or "
+            "increase font size to ≥18px to meet WCAG AA.",
+            "Add a mobile hamburger menu — the nav-links are only visible on wide "
+            "viewports; at the screenshot's apparent ~400px width they are hidden with "
+            "no visible toggle shown.",
+            "Increase the stats bar stat-label font size from 0.75rem to at least "
+            "0.8125rem (13px) to improve legibility of the uppercase tracking labels "
+            "('DAYS', 'ELEV CLIMB', etc.).",
+            "The urgency dot animation ('12 spots remaining') draws the eye but the "
+            "sentence is easy to miss at 0.88rem in the hero. Consider bumping to 0.95rem "
+            "and adding a subtle highlight background to make the scarcity signal more "
+            "scannable.",
+            "Add visible section landmarks (e.g., <main>, landmark roles) so screen-reader "
+            "users and keyboard navigators can jump between sections without relying "
+            "solely on the skip link and nav anchors.",
+            "The hero price anchor ('From $449') uses a very small 0.88rem font below the "
+            "CTA buttons; consider surfacing it more prominently or moving it closer to "
+            "the primary 'Reserve Your Spot' button to reduce the distance between the "
+            "value proposition and the price.",
         ],
-        "axe_count": 0,
-        "rgb": (120, 200, 140),
     },
 ]
 
 
-# Increasingly polished HTML samples.
-_HTML_SAMPLES = [
-    # Iter 1: unstyled
-    """<!doctype html><html><body>
-<p>Weekend cycling tour in rural Vermont. October foliage, quiet back roads, farm-to-table
-stops. Small groups. Book now by emailing tours@example.com.</p>
-</body></html>""",
-    # Iter 2: basic hero + CTA
-    """<!doctype html><html><body style="font-family:sans-serif;max-width:640px;margin:40px auto">
-<h1>Vermont Cycling Tour</h1>
-<p>A weekend of back-road cycling through rural Vermont during peak foliage. Small groups,
-farm-to-table meals, comfortable inns.</p>
-<a href="#book" style="background:#ccc;padding:8px 16px">Book a spot</a>
-</body></html>""",
-    # Iter 3: real layout
-    """<!doctype html><html><body style="font-family:system-ui;margin:0;color:#222">
-<header style="padding:64px 24px;background:#fafaf8;text-align:center">
-  <h1 style="font-size:40px;margin:0 0 12px">Ride Vermont in October</h1>
-  <p style="max-width:560px;margin:0 auto 24px;color:#555">A 3-day cycling weekend through
-     rural Vermont — quiet roads, peak foliage, farm-to-table meals, small groups.</p>
-  <a href="#book" style="background:#2a6;color:#fff;padding:12px 24px;border-radius:6px;
-     text-decoration:none;font-weight:600">Book your weekend</a>
-</header>
-<section style="padding:48px 24px;max-width:720px;margin:0 auto">
-  <h2>What's included</h2>
-  <ul><li>3 days of guided riding</li><li>All meals</li><li>Inn lodging</li></ul>
-</section>
-</body></html>""",
-    # Iter 4: polished
-    """<!doctype html><html><body style="font-family:Georgia,serif;margin:0;color:#1a1a1a;
-     background:#fdfdfa">
-<header style="padding:96px 32px;text-align:center;border-bottom:1px solid #eee">
-  <p style="letter-spacing:.2em;color:#888;font-size:12px;margin:0">OCTOBER 11-13</p>
-  <h1 style="font-size:48px;margin:12px 0 16px;font-weight:400">Three days on<br>Vermont's quietest roads</h1>
-  <p style="max-width:560px;margin:0 auto 32px;color:#444;font-size:18px;line-height:1.6">
-     A small-group cycling weekend through the Green Mountains at peak foliage. Farm-to-table
-     dinners. Handpicked inns. 35 miles a day.</p>
-  <a href="#book" style="background:#1a1a1a;color:#fff;padding:14px 32px;border-radius:4px;
-     text-decoration:none;font-weight:600;letter-spacing:.05em">RESERVE YOUR SPOT</a>
-</header>
-<main style="max-width:720px;margin:64px auto;padding:0 32px;line-height:1.7">
-  <h2 style="font-weight:400">The weekend</h2>
-  <p>You'll ride with 6 other cyclists and one guide. The route loops from Woodstock through
-     Barnard and the Pomfret hollows — dirt roads, covered bridges, no traffic.</p>
-  <h2 style="font-weight:400;margin-top:48px">What's included</h2>
-  <p>Two nights at the Barnard Inn, five meals, a support van, and a route sheet you'll never
-     need to open.</p>
-</main>
-</body></html>""",
-]
+def _violations_matching_penalty(target_penalty: float) -> list[dict]:
+    """Synthesize a violations list that yields approximately `target_penalty`.
 
-for i, it in enumerate(_ITERS):
-    it["html"] = _HTML_SAMPLES[i]
-
-
-def _make_png(width: int, height: int, rgb: tuple[int, int, int]) -> bytes:
-    """Tiny pure-stdlib PNG writer for a solid-color image."""
-    r, g, b = rgb
-    raw = bytearray()
-    for _ in range(height):
-        raw.append(0)  # filter type: None
-        for _ in range(width):
-            raw.extend([r, g, b])
-
-    def chunk(tag: bytes, data: bytes) -> bytes:
-        return (
-            struct.pack(">I", len(data))
-            + tag
-            + data
-            + struct.pack(">I", zlib.crc32(tag + data) & 0xFFFFFFFF)
-        )
-
-    signature = b"\x89PNG\r\n\x1a\n"
-    ihdr = chunk(b"IHDR", struct.pack(">IIBBBBB", width, height, 8, 2, 0, 0, 0))
-    idat = chunk(b"IDAT", zlib.compress(bytes(raw), level=9))
-    iend = chunk(b"IEND", b"")
-    return signature + ihdr + idat + iend
-
-
-def _fake_violation(i: int) -> dict:
-    impacts = ["critical", "serious", "moderate", "minor"]
-    return {
-        "id": f"demo-{i}",
-        "impact": impacts[i % 4],
-        "help": "Placeholder a11y issue for demo data.",
-        "nodes": [{"html": "<span />"}],
-    }
+    scorer.axe_penalty weights critical=5, serious=3, moderate=1.5, minor=0.5
+    per node. To get a specific total we emit serious (weight 3) violations
+    until we're close, then pad with a single fractional minor.
+    The penalty is capped at 30 in scorer.
+    """
+    violations: list[dict] = []
+    remaining = min(target_penalty, 30.0)
+    # Serious @ 3.0/node. Use int() so we undershoot then fine-tune.
+    n_serious_nodes = int(remaining // 3.0)
+    if n_serious_nodes:
+        violations.append({
+            "id": "demo-serious",
+            "impact": "serious",
+            "help": "Preserved from the real run's axe-core report.",
+            "nodes": [{"html": "<span />"} for _ in range(n_serious_nodes)],
+        })
+        remaining -= n_serious_nodes * 3.0
+    # Fill the gap with minor nodes @ 0.5/node.
+    n_minor = int(round(remaining / 0.5))
+    if n_minor > 0:
+        violations.append({
+            "id": "demo-minor",
+            "impact": "minor",
+            "help": "Padding to match recorded penalty.",
+            "nodes": [{"html": "<em />"} for _ in range(n_minor)],
+        })
+    return violations
 
 
 def seed_demo(runs_dir: Path) -> int:
-    """Create one fake run with 4 iterations. Returns the run id."""
+    """Create one demo run with four iterations from the bundled real artifacts."""
     runs_dir.mkdir(parents=True, exist_ok=True)
     store = storage.Storage(runs_dir / "design-gan.sqlite")
-    run_id = store.create_run(
-        "DEMO: A landing page for a weekend cycling tour in rural Vermont.",
-        "demo-seed",
-    )
+    run_id = store.create_run(BRIEF, "demo-seed")
     run_dir = runs_dir / f"run_{run_id:04d}"
     run_dir.mkdir(parents=True, exist_ok=True)
 
+    from .scorer import score as score_fn
+
     best_iter, best_score = 0, -1.0
+    total_cost = 0.0
     for i, it in enumerate(_ITERS, start=1):
         iter_dir = run_dir / f"iter_{i:03d}"
         iter_dir.mkdir(parents=True, exist_ok=True)
-        (iter_dir / "site.html").write_text(it["html"], encoding="utf-8")
-        (iter_dir / "screenshot.png").write_bytes(_make_png(320, 180, it["rgb"]))
 
-        # Scoring
-        from .scorer import score as score_fn
+        # Copy bundled site.html and screenshot.png into the run directory
+        # so the viewer's file routes serve them identically to a real run.
+        (iter_dir / "site.html").write_text(
+            (_ASSETS / f"iter_{i}.html").read_text(encoding="utf-8"),
+            encoding="utf-8",
+        )
+        (iter_dir / "screenshot.png").write_bytes(
+            (_ASSETS / f"iter_{i}.png").read_bytes()
+        )
 
-        violations = [_fake_violation(j) for j in range(it["axe_count"])]
+        violations = _violations_matching_penalty(it["axe_penalty"])
         result = score_fn(it["sus_answers"], violations)
 
         store.save_iteration(
             storage.IterationRecord(
                 run_id=run_id,
                 iter=i,
-                html=it["html"],
+                html=(iter_dir / "site.html").read_text(encoding="utf-8"),
                 sus_score=result.sus,
                 axe_penalty=result.axe_penalty,
                 composite_score=result.composite,
@@ -195,13 +246,12 @@ def seed_demo(runs_dir: Path) -> int:
                 feedback=it["feedback"],
                 suggestions=it["suggestions"],
                 artifacts_dir=str(iter_dir),
+                cost_usd=0.0,
             )
         )
         if result.composite > best_score:
             best_score = result.composite
             best_iter = i
-        # Space iterations out a bit so the viewer's timestamps look plausible.
-        time.sleep(0.01)
 
     store.finish_run(run_id, best_iter, best_score, "converged")
     return run_id

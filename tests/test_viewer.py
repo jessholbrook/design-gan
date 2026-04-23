@@ -31,8 +31,8 @@ class TestIndex:
     def test_index_shows_seeded_run(self, client: TestClient):
         r = client.get("/")
         assert "DEMO: A landing page" in r.text
-        # Seed run composite best is 95.0 -> rendered as "95".
-        assert "95" in r.text
+        # Seed run composite peak is 75.5 from the real run, rendered as "76".
+        assert ">76<" in r.text or '">76<' in r.text
 
     def test_index_sidebar_lists_runs(self, client: TestClient):
         r = client.get("/")
