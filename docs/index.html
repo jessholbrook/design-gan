@@ -4,7 +4,7 @@
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width,initial-scale=1" />
   <title>design-gan — a dual-agent loop that evolves website designs</title>
-  <meta name="description" content="An autoresearch-style experiment: a Claude generator writes single-page sites, a Claude critic scores them on the System Usability Scale, and the loop feeds feedback back in until the score plateaus." />
+  <meta name="description" content="An autoresearch-style experiment with two sides: an evolution loop over single-page websites scored on the System Usability Scale, and the same loop over conversations scored on a parallel Conversation Usability Scale." />
   <style>
     :root {
       --bg: #faf9f6;
@@ -278,9 +278,58 @@
     details.dataset summary { cursor: pointer; color: var(--muted); font-size: 13px; }
     details.dataset pre { margin-top: 10px; max-height: 320px; }
 
+    /* Conversation-iter cards: transcript stacks vertically instead of side-by-side. */
+    .iter-body-stack {
+      grid-template-columns: 1fr !important;
+      gap: 24px;
+    }
+    .transcript-body {
+      display: flex;
+      flex-direction: column;
+      gap: 12px;
+    }
+    .bubble {
+      padding: 12px 16px;
+      border-radius: 12px;
+      max-width: 80%;
+      line-height: 1.55;
+      font-size: 15px;
+    }
+    .bubble-role {
+      font-size: 10px;
+      letter-spacing: 0.1em;
+      text-transform: uppercase;
+      color: var(--muted);
+      margin-bottom: 4px;
+    }
+    .bubble-text { color: var(--text); white-space: pre-wrap; }
+    .bubble-user {
+      background: #eff6ff;
+      align-self: flex-start;
+      border: 1px solid #dbeafe;
+    }
+    .bubble-assistant {
+      background: #f0fdf4;
+      align-self: flex-end;
+      border: 1px solid #d1fae5;
+    }
+
+    /* Callout banner used to highlight the "score plateau vs. transcript evolution" story. */
+    .callout {
+      margin: 16px 0 20px;
+      padding: 14px 18px;
+      background: #fef3c7;
+      border: 1px solid #fde68a;
+      color: #78350f;
+      border-radius: 10px;
+      font-size: 14px;
+      line-height: 1.6;
+    }
+
     @media (max-width: 720px) {
       .iter-body { grid-template-columns: 1fr; }
       .sus-row { grid-template-columns: repeat(5, 1fr); }
+      .bubble { max-width: 95%; }
     }
   </style>
 </head>
@@ -528,6 +577,366 @@
       </div>
     </section>
 
+    <section id="the-convo-run">
+      <h2>Now the same loop, for conversations</h2>
+      <p class="lead">
+        <strong>design-gan</strong> isn't about websites — it's about treating any
+        generated artifact as something you can evolve under critique. The second
+        half of the system runs the identical loop over <em>conversations</em>:
+        a user simulator plays a person with a goal, the assistant replies over
+        up to five turns, and the critic scores the whole transcript on a
+        parallel Conversation Usability Scale (CUS).
+      </p>
+      <p>
+        The composite score formula is unchanged: CUS (0–100) minus weighted
+        objective penalties (repetition, boilerplate phrases, length bloat,
+        unresolved goals), with the penalty capped at 30 so reasoning can't be
+        buried by nitpicks.
+      </p>
+
+      <div class="stats">
+        <div class="stat">
+          <div class="stat-label">Peak composite</div>
+          <div class="stat-value good">100</div>
+        </div>
+        <div class="stat">
+          <div class="stat-label">Iterations</div>
+          <div class="stat-value">4</div>
+        </div>
+        <div class="stat">
+          <div class="stat-label">Critics (ensemble)</div>
+          <div class="stat-value">3</div>
+        </div>
+        <div class="stat">
+          <div class="stat-label">Turn count per iter</div>
+          <div class="stat-value">1 → 2 → 4 → 3</div>
+        </div>
+      </div>
+
+      <h2 style="margin-top:48px">How a conversation iteration works</h2>
+      <pre class="diagram">goal ──▶ generator ──▶ assistant system prompt
+                                    │
+                                    ▼
+       user sim ◀───────────▶ assistant (up to N turns)
+                    │
+                    ▼
+            transcript ──▶ objective metrics
+                    │
+                    ▼
+       critic(s) ◀── Conversation Usability Scale (10-item)
+            │
+            ├─▶ CUS answers (10 × 1–5)
+            ├─▶ prose feedback
+            └─▶ prioritized suggestions ──▶ next generator call</pre>
+      <p>
+        The user simulator is another Claude — same model as the assistant —
+        given a persona sketch and the goal. It decides when it's satisfied and
+        ends the conversation naturally, so <em>turn count is an output, not
+        just a cap</em>.
+      </p>
+
+      <h2 style="margin-top:48px">A real run — goal: &ldquo;I keep procrastinating on writing my thesis. How do I actually start?&rdquo;</h2>
+      <p>
+        Iter 1 scored 100 out of the gate. Iters 2–4 landed at 97.5 as the
+        critic pushed for structure and the assistant introduced trade-offs
+        — a textbook local optimum where &ldquo;improving&rdquo; can only
+        cost a little. Look at the transcripts to see the actual story:
+      </p>
+
+      <aside class="callout">
+        <strong>Score convergence hides conversation evolution.</strong>
+        Iter 1 is a single-turn zinger. Iter 2 is two turns with a follow-up
+        about mid-session freeze. Iter 3 runs four turns and builds a
+        write/break/read loop. Iter 4 opens with two clarifying questions
+        before anything else. The CUS line barely moves; the conversations
+        change shape entirely.
+      </aside>
+
+      <div class="chart-card">
+        <svg viewBox="0 0 800 240" class="chart" preserveAspectRatio="xMidYMid meet">
+  <line class="grid-line" x1="40" y1="212.0" x2="784" y2="212.0" /><text class="axis-label" x="6" y="216.0">0</text>
+<line class="grid-line" x1="40" y1="163.0" x2="784" y2="163.0" /><text class="axis-label" x="6" y="167.0">25</text>
+<line class="grid-line" x1="40" y1="114.0" x2="784" y2="114.0" /><text class="axis-label" x="6" y="118.0">50</text>
+<line class="grid-line" x1="40" y1="65.0" x2="784" y2="65.0" /><text class="axis-label" x="6" y="69.0">75</text>
+<line class="grid-line" x1="40" y1="16.0" x2="784" y2="16.0" /><text class="axis-label" x="6" y="20.0">100</text>
+  <polyline class="line-sus" points="40.0,16.0 226.0,20.9 412.0,20.9 598.0,20.9" />
+  <polyline class="line-composite" points="40.0,16.0 226.0,20.9 412.0,20.9 598.0,20.9" />
+  <g><circle class="point" cx="40.0" cy="16.0" r="4" /><text class="point-label" x="40.0" y="6.0" text-anchor="middle">100</text></g>
+<g><circle class="point" cx="226.0" cy="20.9" r="4" /><text class="point-label" x="226.0" y="10.9" text-anchor="middle">98</text></g>
+<g><circle class="point" cx="412.0" cy="20.9" r="4" /><text class="point-label" x="412.0" y="10.9" text-anchor="middle">98</text></g>
+<g><circle class="point" cx="598.0" cy="20.9" r="4" /><text class="point-label" x="598.0" y="10.9" text-anchor="middle">98</text></g>
+  <text class="axis-label" x="40.0" y="228" text-anchor="middle">#1</text>
+<text class="axis-label" x="226.0" y="228" text-anchor="middle">#2</text>
+<text class="axis-label" x="412.0" y="228" text-anchor="middle">#3</text>
+<text class="axis-label" x="598.0" y="228" text-anchor="middle">#4</text>
+  <g class="legend" transform="translate(620, 22)">
+    <line class="line-composite" x1="0" y1="6" x2="24" y2="6" />
+    <text x="30" y="10">composite</text>
+    <line class="line-sus" x1="90" y1="6" x2="114" y2="6" />
+    <text x="120" y="10">CUS</text>
+  </g>
+</svg>
+      </div>
+
+      <div class="iter-stack">
+        <article class="iter">
+  <header>
+    <div class="iter-meta">
+      <span class="iter-label">Iteration</span>
+      <span class="iter-num">#1</span>
+    </div>
+    <div class="iter-score">
+      <span class="badge score-good">100</span>
+      <div class="iter-score-breakdown">
+        <div><span>CUS</span><b>100</b></div>
+        <div><span>penalty</span><b>0</b></div>
+        <div><span>turns</span><b>1</b></div>
+      </div>
+    </div>
+  </header>
+  <div class="iter-body iter-body-stack">
+    <div class="transcript-body"><div class="bubble bubble-user"><div class="bubble-role">user</div><div class="bubble-text">I keep procrastinating on writing my thesis and I don&#x27;t know how to actually get started. Every time I sit down I just freeze or find something else to do. Any practical advice for breaking through that?</div></div><div class="bubble bubble-assistant"><div class="bubble-role">assistant</div><div class="bubble-text">Open your document right now and write one bad sentence about your thesis — any sentence, even &quot;This thesis argues that...&quot; and then nothing. That&#x27;s your only job for the next 2 minutes.
+
+The freezing isn&#x27;t a focus problem, it&#x27;s a fear problem. Your brain is treating the blank page like a commitment to be right, so it refuses to start. The fix is making the first move so low-stakes it can&#x27;t fail.
+
+Here&#x27;s the exact sequence:
+1. Set a 10-minute timer.
+2. Write ugly. No editing, no rereading — just forward motion.
+3. When the timer goes off, stop. You&#x27;ve broken the inertia.
+
+Go. Come back if you get stuck.</div></div><div class="bubble bubble-user"><div class="bubble-role">user</div><div class="bubble-text">That actually makes sense — treating it like a fear problem instead of a focus problem clicks for me. The &#x27;write one bad sentence&#x27; thing is low enough stakes that I can actually do it. I think my goal here is met.</div></div></div>
+    <div class="iter-detail">
+      <h3>CUS answers <span class="muted">(10 items, user-sim's verdict)</span></h3>
+      <ul class="sus-row"><li title="Addressed what I asked: 5/5 (+)"><span class="sus-bar"><span class="sus-fill" style="height:100%"></span></span><span class="sus-num">5</span></li><li title="Generic / filler: 1/5 (−)"><span class="sus-bar"><span class="sus-fill" style="height:100%"></span></span><span class="sus-num">1</span></li><li title="Got actionable info: 5/5 (+)"><span class="sus-bar"><span class="sus-fill" style="height:100%"></span></span><span class="sus-num">5</span></li><li title="Misunderstood my intent: 1/5 (−)"><span class="sus-bar"><span class="sus-fill" style="height:100%"></span></span><span class="sus-num">1</span></li><li title="Natural and easy: 5/5 (+)"><span class="sus-bar"><span class="sus-fill" style="height:100%"></span></span><span class="sus-num">5</span></li><li title="Excessively long-winded: 1/5 (−)"><span class="sus-bar"><span class="sus-fill" style="height:100%"></span></span><span class="sus-num">1</span></li><li title="Trust its answers: 5/5 (+)"><span class="sus-bar"><span class="sus-fill" style="height:100%"></span></span><span class="sus-num">5</span></li><li title="Hedged or vague: 1/5 (−)"><span class="sus-bar"><span class="sus-fill" style="height:100%"></span></span><span class="sus-num">1</span></li><li title="Reached resolution: 5/5 (+)"><span class="sus-bar"><span class="sus-fill" style="height:100%"></span></span><span class="sus-num">5</span></li><li title="Had to repeat / rephrase: 1/5 (−)"><span class="sus-bar"><span class="sus-fill" style="height:100%"></span></span><span class="sus-num">1</span></li></ul>
+      <h3>Critic feedback <span class="muted">(goal resolved)</span></h3>
+      <p class="feedback"><strong>Conversation usability</strong>: This is a near-perfect single-turn interaction. The assistant reframed the problem (fear vs. focus) in a way the user explicitly found clarifying, gave a concrete, low-stakes action, provided a tight 3-step sequence without padding, and ended cleanly — no follow-up hedging or piling on. The user reached stated resolution in one exchange, which is the best possible outcome. The only marginal critique is that the numbered list, while helpful, slightly inflates length when prose could have been equally tight.
+
+<strong>Tone &amp; register</strong>: The assistant nailed this in a single turn — no opener filler, an immediately actionable move (write one bad sentence), and a genuine insight (fear vs. focus framing) that the user called out as the thing that clicked. The ending was clean and propulsive. The user explicitly declared resolution after one exchange, which is the ideal outcome for this type of question.
+
+<strong>Trust &amp; specificity</strong>: This is a near-perfect single-turn exchange. The assistant immediately reframed the problem (&#x27;fear, not focus&#x27;) with a memorable, specific insight rather than recycling generic productivity tips, then gave a numbered sequence the user could execute in the next 10 minutes. The closing &#x27;Go. Come back if you get stuck.&#x27; respected the user&#x27;s time and avoided piling on. The user explicitly declared resolution, which the objective metrics confirm.</p>
+      <h3>Suggestions sent to the next generator</h3>
+      <ul class="suggestions"><li>Collapse the numbered list into a single punchy sentence to shave even more length — the list formatting adds visual weight that can slow momentum for a user who wants to act immediately.</li><li>The &#x27;fear not focus&#x27; reframe was the highest-value insight; consider making it slightly more thesis-specific (e.g., &#x27;committing an imperfect argument to paper&#x27;) to hit even harder.</li><li>Add a one-line safety net earlier — e.g., &#x27;If 2 minutes feels like too much, aim for one sentence&#x27; — to preempt the most likely failure mode without adding bulk.</li><li>The ending &#x27;Go. Come back if you get stuck.&#x27; is excellent; standardize it as a template for wrap-ups so it&#x27;s consistently this crisp.</li><li>For users who might loop back after trying and still freezing, priming a second-turn response about body-doubling or changing environment would keep momentum without cluttering the first response.</li><li>Nothing to fix here — the response matched the system prompt&#x27;s intent precisely and the user confirmed resolution. Any additional advice would have diluted the impact.</li><li>If the user had come back stuck, the assistant could have offered body-doubling or the Pomodoro approach as a natural next layer — good to have in reserve.</li><li>The 3-step numbered list was slightly formal compared to the surrounding prose voice; could optionally fold those into two punchy sentences to keep the register consistent.</li><li>The response could have named the fear more specifically (e.g., &#x27;fear of committing a bad idea to paper&#x27;) for users who need that articulated before they can move — but the current level was appropriate for the opening turn.</li><li>The response is already excellent — suggestions are marginal improvements only.</li></ul>
+    </div>
+  </div>
+</article>
+<article class="iter">
+  <header>
+    <div class="iter-meta">
+      <span class="iter-label">Iteration</span>
+      <span class="iter-num">#2</span>
+    </div>
+    <div class="iter-score">
+      <span class="badge score-good">98</span>
+      <div class="iter-score-breakdown">
+        <div><span>CUS</span><b>98</b></div>
+        <div><span>penalty</span><b>0</b></div>
+        <div><span>turns</span><b>2</b></div>
+      </div>
+    </div>
+  </header>
+  <div class="iter-body iter-body-stack">
+    <div class="transcript-body"><div class="bubble bubble-user"><div class="bubble-role">user</div><div class="bubble-text">I keep putting off writing my thesis and I don&#x27;t know how to actually get started. Every time I sit down to write I either freeze up or find something else to do. Any practical advice for breaking through that?</div></div><div class="bubble bubble-assistant"><div class="bubble-role">assistant</div><div class="bubble-text">The freeze isn&#x27;t a focus problem — it&#x27;s your brain refusing to commit an imperfect argument to the page. The fix is to make the first thing you write *deliberately* bad. Open a doc right now and type the worst possible version of your thesis: clunky, wrong, embarrassing. Something like &quot;This thesis is about how X affects Y and it&#x27;s kind of complicated.&quot; That sentence is now on the page, and the blank page problem is solved.
+
+The only rule for the next 25 minutes: writing and editing are separate jobs, and editing isn&#x27;t on the schedule yet. Write garbage, keep moving.
+
+Go. You&#x27;ve got 25 minutes. Come back if you get stuck.</div></div><div class="bubble bubble-user"><div class="bubble-role">user</div><div class="bubble-text">Okay that&#x27;s actually useful — I like the &#x27;write the worst version first&#x27; idea. I&#x27;ll try it. But what do I do when I inevitably freeze up again mid-session?</div></div><div class="bubble bubble-assistant"><div class="bubble-role">assistant</div><div class="bubble-text">When you freeze mid-session, it almost always means you&#x27;ve slipped back into editing mode without noticing — your internal critic showed up and you&#x27;re now trying to write and judge simultaneously. The move: type &quot;[I&#x27;m stuck here because...]&quot; and finish that sentence honestly. It keeps the pen moving and usually names the actual snag (wrong argument? missing evidence? just scared?). If that doesn&#x27;t unlock it, skip the stuck sentence entirely, drop a &quot;[COME BACK]&quot; placeholder, and write the next thing you *do* know — a blank space is unfixable later, a placeholder isn&#x27;t.</div></div><div class="bubble bubble-user"><div class="bubble-role">user</div><div class="bubble-text">This is solid, thanks. The placeholder trick is something I can actually use. I think I have enough to go try this now.</div></div></div>
+    <div class="iter-detail">
+      <h3>CUS answers <span class="muted">(10 items, user-sim's verdict)</span></h3>
+      <ul class="sus-row"><li title="Addressed what I asked: 5/5 (+)"><span class="sus-bar"><span class="sus-fill" style="height:100%"></span></span><span class="sus-num">5</span></li><li title="Generic / filler: 1/5 (−)"><span class="sus-bar"><span class="sus-fill" style="height:100%"></span></span><span class="sus-num">1</span></li><li title="Got actionable info: 5/5 (+)"><span class="sus-bar"><span class="sus-fill" style="height:100%"></span></span><span class="sus-num">5</span></li><li title="Misunderstood my intent: 1/5 (−)"><span class="sus-bar"><span class="sus-fill" style="height:100%"></span></span><span class="sus-num">1</span></li><li title="Natural and easy: 5/5 (+)"><span class="sus-bar"><span class="sus-fill" style="height:100%"></span></span><span class="sus-num">5</span></li><li title="Excessively long-winded: 1/5 (−)"><span class="sus-bar"><span class="sus-fill" style="height:100%"></span></span><span class="sus-num">1</span></li><li title="Trust its answers: 4/5 (+)"><span class="sus-bar"><span class="sus-fill" style="height:75%"></span></span><span class="sus-num">4</span></li><li title="Hedged or vague: 1/5 (−)"><span class="sus-bar"><span class="sus-fill" style="height:100%"></span></span><span class="sus-num">1</span></li><li title="Reached resolution: 5/5 (+)"><span class="sus-bar"><span class="sus-fill" style="height:100%"></span></span><span class="sus-num">5</span></li><li title="Had to repeat / rephrase: 1/5 (−)"><span class="sus-bar"><span class="sus-fill" style="height:100%"></span></span><span class="sus-num">1</span></li></ul>
+      <h3>Critic feedback <span class="muted">(goal resolved)</span></h3>
+      <p class="feedback"><strong>Conversation usability</strong>: The assistant executed almost flawlessly against a clearly defined goal. It named the root cause immediately (fear of committing an imperfect argument), gave a single concrete action without preamble, kept both responses to 3–4 punchy sentences, and the user explicitly declared resolution. No hedging, no filler, no over-stacking of tactics — the system prompt constraints were followed precisely and served the user well.
+
+<strong>Tone &amp; register</strong>: This is nearly textbook execution: the assistant named the real problem (fear of committing, not focus), gave a specific, instantly usable tactic, and never padded. The voice read like a sharp human, not a chatbot — no affirmation filler, no hedging, no list inflation. The second turn&#x27;s &#x27;[COME BACK]&#x27; placeholder was a memorable, concrete detail that the user explicitly called out as useful. User reached explicit resolution in two assistant turns.
+
+<strong>Trust &amp; specificity</strong>: This was a near-perfect short coaching conversation. The assistant correctly named the root cause (fear of committing an imperfect argument, not a focus problem), gave an immediately executable technique (write deliberately bad on purpose), and followed up with an equally specific mid-session fix (the bracket tricks). Zero filler, zero hedging, no lists piled on top of lists — and the user explicitly declared resolution and readiness to act. The only minor ding is that trusting it broadly on &#x27;similar topics&#x27; is a 4 rather than a 5, since the advice is practical wisdom rather than deeply referenced expertise.</p>
+      <h3>Suggestions sent to the next generator</h3>
+      <ul class="suggestions"><li>In turn 2, the &#x27;[I&#x27;m stuck here because...]&#x27; tip was slightly abstract — a single inline example of a completed sentence (e.g., &#x27;I&#x27;m stuck here because I don&#x27;t have the evidence yet&#x27;) would have made it immediately actionable without adding length.</li><li>The 25-minute timer was introduced without framing; briefly tying it to the writing/editing separation principle (&#x27;25 minutes of write-only mode&#x27;) would have reinforced the core insight rather than making it feel like an arbitrary number.</li><li>Attributing the &#x27;write the worst version&#x27; technique to a recognizable source (e.g., Anne Lamott&#x27;s &#x27;shitty first drafts&#x27;) would have slightly increased credibility and given the user something to look up if they wanted to go deeper.</li><li>Turn 3 ended cleanly per the system prompt, but since the user signaled they were ready to go — rather than that they&#x27;d already tried it — a one-line nudge like &#x27;Start the timer as soon as this window closes&#x27; could have converted intent to immediate action.</li><li>The conversation assumed a blank-page scenario that matched the user&#x27;s actual situation, but a single five-word diagnostic question early on (e.g., &#x27;Blank page or stuck mid-draft?&#x27;) would future-proof the approach for users who are blocked at a different stage.</li><li>In turn 3, the second sentence (&#x27;your internal critic showed up and you&#x27;re now trying to write and judge simultaneously&#x27;) is slightly redundant with the first — could trim to one punch for tighter delivery.</li><li>The closing line of turn 1 (&#x27;Come back if you get stuck&#x27;) turned out to be exactly what the user did — consider whether that invitation slightly lengthens the conversation in a way that doesn&#x27;t serve someone who could have self-resolved; it&#x27;s a minor tradeoff.</li><li>The example thesis sentence (&#x27;This thesis is about how X affects Y and it&#x27;s kind of complicated&#x27;) is useful but generic — if the assistant had prompted the user to fill in their actual topic, it would have made the exercise more grounded and harder to skip.</li><li>After user resolution in turn 4, an optional ultra-short send-off (&#x27;Go. Come back after the session.&#x27;) would have been a clean cap — the absence of any reply here is fine, but the system prompt&#x27;s formula could have landed one last time.</li><li>The &#x27;[I&#x27;m stuck because...]&#x27; technique could briefly name why it works (keeps pen moving, externalizes the block) — one clause would add persuasive weight without bloat.</li></ul>
+    </div>
+  </div>
+</article>
+<article class="iter">
+  <header>
+    <div class="iter-meta">
+      <span class="iter-label">Iteration</span>
+      <span class="iter-num">#3</span>
+    </div>
+    <div class="iter-score">
+      <span class="badge score-good">98</span>
+      <div class="iter-score-breakdown">
+        <div><span>CUS</span><b>98</b></div>
+        <div><span>penalty</span><b>0</b></div>
+        <div><span>turns</span><b>4</b></div>
+      </div>
+    </div>
+  </header>
+  <div class="iter-body iter-body-stack">
+    <div class="transcript-body"><div class="bubble bubble-user"><div class="bubble-role">user</div><div class="bubble-text">I keep procrastinating on my thesis and I can&#x27;t seem to actually start writing. Any advice on how to break through that and just get going?</div></div><div class="bubble bubble-assistant"><div class="bubble-role">assistant</div><div class="bubble-text">Blank page or stuck mid-draft?</div></div><div class="bubble bubble-user"><div class="bubble-role">user</div><div class="bubble-text">Blank page. I know roughly what I want to say but every time I sit down to write I just freeze and end up doing anything else.</div></div><div class="bubble bubble-assistant"><div class="bubble-role">assistant</div><div class="bubble-text">That freeze isn&#x27;t a focus problem — it&#x27;s fear of locking in an imperfect argument. Your brain keeps stalling because it&#x27;s trying to write the *good* version before you&#x27;ve written *any* version.
+
+So right now, before you close this window, type one deliberately terrible sentence. Something like: &quot;This thesis argues that [your topic] matters because [reason], though I haven&#x27;t actually figured out why yet.&quot; That&#x27;s it. That&#x27;s the whole job for the next two minutes — not a draft, just proof that words can exist on the page.
+
+Go. Start the timer as soon as this window closes. Come back if you get stuck.</div></div><div class="bubble bubble-user"><div class="bubble-role">user</div><div class="bubble-text">Okay that actually makes sense. I did write the bad sentence. Now what? Do I just keep writing garbage until something good comes out?</div></div><div class="bubble bubble-assistant"><div class="bubble-role">assistant</div><div class="bubble-text">Yes — but with one rule: no editing for the next 25 minutes. Write-only mode. The freeze comes back the second you start judging what you just wrote, so that&#x27;s a completely separate session.
+
+If you hit a spot where you don&#x27;t have the evidence or logic yet, just type `[stuck here — need to figure out X]` and keep moving. That bracket is a placeholder, not a wall.
+
+Go. Start the timer as soon as this window closes. Come back if you get stuck.</div></div><div class="bubble bubble-user"><div class="bubble-role">user</div><div class="bubble-text">Got it — that actually clicks. I&#x27;ll try the 25 minutes. What do I do when the timer goes off? Is that when I go back and edit, or take a break, or what?</div></div><div class="bubble bubble-assistant"><div class="bubble-role">assistant</div><div class="bubble-text">Take a five-minute break — stand up, get water, don&#x27;t look at the page. Then come back and read what you wrote *without touching it* yet; just get the lay of the land. Editing is a different cognitive mode and you need a small reset between the two or you&#x27;ll start pruning sentences that are actually fine.
+
+Go. Start the timer as soon as this window closes. Come back if you get stuck.</div></div><div class="bubble bubble-user"><div class="bubble-role">user</div><div class="bubble-text">That&#x27;s a solid loop — write, break, read. I think I actually have enough to work with now. Thanks, this was more useful than I expected.</div></div></div>
+    <div class="iter-detail">
+      <h3>CUS answers <span class="muted">(10 items, user-sim's verdict)</span></h3>
+      <ul class="sus-row"><li title="Addressed what I asked: 5/5 (+)"><span class="sus-bar"><span class="sus-fill" style="height:100%"></span></span><span class="sus-num">5</span></li><li title="Generic / filler: 1/5 (−)"><span class="sus-bar"><span class="sus-fill" style="height:100%"></span></span><span class="sus-num">1</span></li><li title="Got actionable info: 5/5 (+)"><span class="sus-bar"><span class="sus-fill" style="height:100%"></span></span><span class="sus-num">5</span></li><li title="Misunderstood my intent: 1/5 (−)"><span class="sus-bar"><span class="sus-fill" style="height:100%"></span></span><span class="sus-num">1</span></li><li title="Natural and easy: 5/5 (+)"><span class="sus-bar"><span class="sus-fill" style="height:100%"></span></span><span class="sus-num">5</span></li><li title="Excessively long-winded: 1/5 (−)"><span class="sus-bar"><span class="sus-fill" style="height:100%"></span></span><span class="sus-num">1</span></li><li title="Trust its answers: 4/5 (+)"><span class="sus-bar"><span class="sus-fill" style="height:75%"></span></span><span class="sus-num">4</span></li><li title="Hedged or vague: 1/5 (−)"><span class="sus-bar"><span class="sus-fill" style="height:100%"></span></span><span class="sus-num">1</span></li><li title="Reached resolution: 5/5 (+)"><span class="sus-bar"><span class="sus-fill" style="height:100%"></span></span><span class="sus-num">5</span></li><li title="Had to repeat / rephrase: 1/5 (−)"><span class="sus-bar"><span class="sus-fill" style="height:100%"></span></span><span class="sus-num">1</span></li></ul>
+      <h3>Critic feedback <span class="muted">(goal resolved)</span></h3>
+      <p class="feedback"><strong>Conversation usability</strong>: The assistant diagnosed the problem precisely (fear of imperfect commitment, not focus), gave an immediately actionable task (write one deliberately bad sentence), then built each subsequent turn on what the user had just done — a tight, progressive loop that reached resolution in four exchanges. The repeated closing push formula (&#x27;Go. Start the timer…&#x27;) was slightly mechanical by the third use, but did not harm the user experience. Trust is docked one point because the advice, while solid, is practical-coach-level rather than demonstrably research-grounded. Overall this is a near-optimal short coaching conversation.
+
+<strong>Tone &amp; register</strong>: One of the cleaner productivity coaching conversations I&#x27;ve seen — the diagnostic opener, tailored pivot, and concrete techniques (bad sentence template, bracket trick, write-only window) all landed precisely. The one mechanical tell is the sign-off formula repeated verbatim three times; it works the first time but by the third iteration it reads like a macro firing, not a human wrapping up. User explicitly declared resolution and called it more useful than expected, which is a strong signal.
+
+<strong>Trust &amp; specificity</strong>: The assistant executed nearly perfectly: the upfront diagnostic question targeted the exact scenario before dispensing advice, the core insight (fear-of-imperfect-argument, not focus) was concrete and named accurately, and every tactic came with a specific template or time box rather than vague encouragement. The user explicitly confirmed the techniques worked and declared resolution with &#x27;I actually have enough to work with now&#x27; — a clear success. The one minor mechanical note is that the closing &#x27;Go. Start the timer…&#x27; line repeated verbatim across three turns, which added a slight rote feel, but it didn&#x27;t undermine the substance.</p>
+      <h3>Suggestions sent to the next generator</h3>
+      <ul class="suggestions"><li>Vary or drop the repeated closing formula after the second use — by turn 7 it reads as a canned script rather than a genuine push.</li><li>After the user successfully wrote the bad sentence, briefly acknowledge the win before pivoting to the next tactic — even one word (&#x27;Good.&#x27;) builds momentum and models the &#x27;write without judging&#x27; behavior the assistant is trying to instill.</li><li>Ask the user&#x27;s actual thesis topic at the diagnostic stage — even a brief anchor (&#x27;What&#x27;s the topic in one line?&#x27;) lets you model the fill-in sentence with real content, making it more actionable than a bracketed placeholder.</li><li>On the post-timer question, offer one concrete heuristic for whether to edit or take another write pass — something like &#x27;if you filled more than half a page, edit; if not, take one more write round&#x27; gives the user a decision rule rather than leaving them to feel it out.</li><li>Consider briefly naming the Anne Lamott or academic source behind the &#x27;shitty first drafts&#x27; framing — users who&#x27;ve heard the concept before get an instant credibility anchor, and those who haven&#x27;t can look it up for reinforcement after the session.</li><li>Vary the closing push across turns — identical wording three times in a row reveals the template; even small paraphrasing (&#x27;Now go. Timer on, window closed.&#x27;) preserves the punch without the mechanical feel.</li><li>When the user signals success (&#x27;I did write the bad sentence&#x27;), briefly acknowledge the win before pivoting to the next move — one short clause is enough and keeps the rapport human rather than purely task-sequential.</li><li>The bracket trick and the 25-minute rule were stacked in the same turn despite the system prompt&#x27;s &#x27;use one at a time&#x27; rule — splitting them would have kept each technique more memorable and avoided cognitive load.</li><li>In the post-timer turn, &#x27;don&#x27;t look at the page&#x27; is slightly ambiguous — &#x27;don&#x27;t open the doc during the break&#x27; would be more concrete and prevent the user from second-guessing what counts.</li><li>Turn 7 could have named *why* editing is a different cognitive mode in one clause (e.g., &#x27;analytical vs. generative&#x27;) — it was stated but that one-phrase anchor would make the advice more memorable and transferable.</li></ul>
+    </div>
+  </div>
+</article>
+<article class="iter">
+  <header>
+    <div class="iter-meta">
+      <span class="iter-label">Iteration</span>
+      <span class="iter-num">#4</span>
+    </div>
+    <div class="iter-score">
+      <span class="badge score-good">98</span>
+      <div class="iter-score-breakdown">
+        <div><span>CUS</span><b>98</b></div>
+        <div><span>penalty</span><b>0</b></div>
+        <div><span>turns</span><b>3</b></div>
+      </div>
+    </div>
+  </header>
+  <div class="iter-body iter-body-stack">
+    <div class="transcript-body"><div class="bubble bubble-user"><div class="bubble-role">user</div><div class="bubble-text">I keep procrastinating on my thesis and can&#x27;t seem to actually start writing. Every time I sit down I either freeze up or end up doing something else. What&#x27;s a practical way to break through this?</div></div><div class="bubble bubble-assistant"><div class="bubble-role">assistant</div><div class="bubble-text">Two quick questions before I give you anything concrete:
+
+1. Are you stuck at a blank page, or are you mid-draft and stalled?
+2. What&#x27;s your thesis topic in one line?</div></div><div class="bubble bubble-user"><div class="bubble-role">user</div><div class="bubble-text">Blank page — I haven&#x27;t written a single paragraph yet. Topic is something like &#x27;the impact of social media on political polarization in Gen Z.&#x27; I&#x27;ve done research, I have notes, I just can&#x27;t seem to actually write anything.</div></div><div class="bubble bubble-assistant"><div class="bubble-role">assistant</div><div class="bubble-text">Here&#x27;s what&#x27;s actually happening: you&#x27;re not failing to focus — you&#x27;re afraid of writing something wrong and having it exist. The blank page feels safe because it can&#x27;t be judged yet. That&#x27;s the real block.
+
+The antidote is to write one sentence that&#x27;s *deliberately* bad. Right now, before anything else:
+
+&gt; &quot;This thesis argues that social media&#x27;s role in Gen Z political polarization matters because [reason], though I haven&#x27;t fully figured out why yet.&quot;
+
+That&#x27;s your sentence to write — use your actual words, make it worse if you want. The point is to break the seal. This is Anne Lamott&#x27;s shitty-first-drafts principle: the first draft&#x27;s only job is to exist, not to be good.
+
+Write that sentence now. Tell me when you have it.</div></div><div class="bubble bubble-user"><div class="bubble-role">user</div><div class="bubble-text">Okay I actually tried it and wrote something embarrassingly bad. It worked a little — I felt less frozen. But now what? I don&#x27;t want to stall again after one sentence.</div></div><div class="bubble bubble-assistant"><div class="bubble-role">assistant</div><div class="bubble-text">Good — that&#x27;s the hardest move, and you made it.
+
+Now capitalize on it: set a 25-minute write-only window. No editing, no rereading what you just wrote — just keep generating. Editing is analytical mode; writing is generative. They can&#x27;t run at the same time, so don&#x27;t try. This isn&#x27;t a willpower thing, it&#x27;s a different cognitive session entirely.
+
+Open the doc, start the timer, write forward from that bad sentence. Nothing else.
+
+Go. Start the timer as soon as this window closes.</div></div><div class="bubble bubble-user"><div class="bubble-role">user</div><div class="bubble-text">That&#x27;s actually really helpful — I have a clear next move now. Thanks.</div></div></div>
+    <div class="iter-detail">
+      <h3>CUS answers <span class="muted">(10 items, user-sim's verdict)</span></h3>
+      <ul class="sus-row"><li title="Addressed what I asked: 5/5 (+)"><span class="sus-bar"><span class="sus-fill" style="height:100%"></span></span><span class="sus-num">5</span></li><li title="Generic / filler: 1/5 (−)"><span class="sus-bar"><span class="sus-fill" style="height:100%"></span></span><span class="sus-num">1</span></li><li title="Got actionable info: 5/5 (+)"><span class="sus-bar"><span class="sus-fill" style="height:100%"></span></span><span class="sus-num">5</span></li><li title="Misunderstood my intent: 1/5 (−)"><span class="sus-bar"><span class="sus-fill" style="height:100%"></span></span><span class="sus-num">1</span></li><li title="Natural and easy: 5/5 (+)"><span class="sus-bar"><span class="sus-fill" style="height:100%"></span></span><span class="sus-num">5</span></li><li title="Excessively long-winded: 1/5 (−)"><span class="sus-bar"><span class="sus-fill" style="height:100%"></span></span><span class="sus-num">1</span></li><li title="Trust its answers: 4/5 (+)"><span class="sus-bar"><span class="sus-fill" style="height:75%"></span></span><span class="sus-num">4</span></li><li title="Hedged or vague: 1/5 (−)"><span class="sus-bar"><span class="sus-fill" style="height:100%"></span></span><span class="sus-num">1</span></li><li title="Reached resolution: 5/5 (+)"><span class="sus-bar"><span class="sus-fill" style="height:100%"></span></span><span class="sus-num">5</span></li><li title="Had to repeat / rephrase: 1/5 (−)"><span class="sus-bar"><span class="sus-fill" style="height:100%"></span></span><span class="sus-num">1</span></li></ul>
+      <h3>Critic feedback <span class="muted">(goal resolved)</span></h3>
+      <p class="feedback"><strong>Conversation usability</strong>: The assistant ran a clean, efficient arc: two targeted clarifying questions, a personalized diagnosis using the user&#x27;s actual topic, and one tactic deployed per turn with no stacking. The user explicitly reached resolution and had a concrete next move. The only minor drag is the opening clarification turn added a round-trip before anything actionable landed, though the payoff — advice personalized to &#x27;Gen Z political polarization&#x27; rather than a generic thesis — clearly justified it.
+
+<strong>Tone &amp; register</strong>: The assistant executed nearly everything right: it asked exactly two clarifying questions, used the user&#x27;s real thesis topic to make the bad-sentence template concrete, named the psychological mechanism without padding it, acknowledged the user&#x27;s win in a single clause, and closed each turn with a crisp push. The user reached explicit resolution in three assistant turns with no hedging, no filler openers, and no repeated advice. Minor deductions: the two-question opener reads slightly script-like rather than conversational, and the closing push (&#x27;Go. Start the timer as soon as this window closes.&#x27;) feels templated rather than earned.
+
+<strong>Trust &amp; specificity</strong>: The assistant executed nearly perfectly: it gathered exactly the two data points it needed, named the real psychological block with specificity, and made the intervention concrete by using the user&#x27;s actual thesis topic in the example sentence. Acknowledging the win in one clause before pivoting to the next tactic was crisp and non-patronizing. The only hairline crack is that the user had to ask &#x27;now what?&#x27; — a single forward-pointer at the end of turn 3 (e.g., &#x27;once you have it, we&#x27;ll set a 25-min timer&#x27;) could have anticipated that and kept momentum tighter.</p>
+      <h3>Suggestions sent to the next generator</h3>
+      <ul class="suggestions"><li>Consider offering a short provisional hypothesis *while* asking the two questions, so the user gets something actionable even if they don&#x27;t reply — reduces the cost of the clarification round-trip.</li><li>The &#x27;write one deliberately bad sentence&#x27; tactic could include a brief instruction on where to put it (top of the doc, new file, notes doc) to remove the micro-decision that can itself stall action.</li><li>When the user reported the sentence worked &#x27;a little,&#x27; acknowledging the partial success rather than a full win (&#x27;Good — that&#x27;s the hardest move&#x27;) more honestly mirrors their experience and could deepen trust.</li><li>The closing push (&#x27;Go. Start the timer as soon as this window closes.&#x27;) is strong but could name a specific timer tool or method (phone clock, Pomofocus, etc.) for users who would otherwise spend time choosing one.</li><li>Trust calibration: the analytical-vs-generative claim is stated as fact with no hedging; a brief attribution (even &#x27;cognitive science of writing suggests…&#x27;) would make it more credible without adding filler.</li><li>Weave the two clarifying questions into a single natural sentence rather than a numbered list — it reads more like a coach and less like a chatbot intake form.</li><li>Make the bad-sentence template even rougher (&#x27;I think social media does something to Gen Z politics, but I&#x27;m not sure what&#x27;) — a more obviously terrible example lowers the bar further and is easier for the user to beat.</li><li>After the 25-minute timer suggestion, give the user one post-timer decision rule unprompted (e.g., &#x27;If you filled more than half a page, switch to editing next session; if not, do another write round&#x27;) — it prevents the next stall before it happens.</li><li>When crediting Anne Lamott, briefly anchor why it&#x27;s trustworthy (&#x27;her actual term is shitty first drafts — it&#x27;s from a widely-used craft book&#x27;) so the user knows it&#x27;s a real, lookable-up concept rather than a coaching platitude.</li><li>Consider proactively naming what &#x27;after the 25 minutes&#x27; looks like in one clause — users often stall again at the transition, and pre-empting it keeps momentum without adding length.</li></ul>
+    </div>
+  </div>
+</article>
+      </div>
+
+      <details class="dataset">
+        <summary>Raw CUS dataset for this conversation run (JSON)</summary>
+        <pre><code>[
+  {
+    &quot;iter&quot;: 1,
+    &quot;cus&quot;: 100.0,
+    &quot;penalty&quot;: 0.0,
+    &quot;composite&quot;: 100.0,
+    &quot;turns_taken&quot;: 1,
+    &quot;satisfied&quot;: true,
+    &quot;sus_answers&quot;: [
+      5,
+      1,
+      5,
+      1,
+      5,
+      1,
+      5,
+      1,
+      5,
+      1
+    ],
+    &quot;cost_usd&quot;: 0.24800925000000001
+  },
+  {
+    &quot;iter&quot;: 2,
+    &quot;cus&quot;: 97.5,
+    &quot;penalty&quot;: 0.0,
+    &quot;composite&quot;: 97.5,
+    &quot;turns_taken&quot;: 2,
+    &quot;satisfied&quot;: true,
+    &quot;sus_answers&quot;: [
+      5,
+      1,
+      5,
+      1,
+      5,
+      1,
+      4,
+      1,
+      5,
+      1
+    ],
+    &quot;cost_usd&quot;: 0.2888682
+  },
+  {
+    &quot;iter&quot;: 3,
+    &quot;cus&quot;: 97.5,
+    &quot;penalty&quot;: 0.0,
+    &quot;composite&quot;: 97.5,
+    &quot;turns_taken&quot;: 4,
+    &quot;satisfied&quot;: true,
+    &quot;sus_answers&quot;: [
+      5,
+      1,
+      5,
+      1,
+      5,
+      1,
+      4,
+      1,
+      5,
+      1
+    ],
+    &quot;cost_usd&quot;: 0.33798225000000004
+  },
+  {
+    &quot;iter&quot;: 4,
+    &quot;cus&quot;: 97.5,
+    &quot;penalty&quot;: 0.0,
+    &quot;composite&quot;: 97.5,
+    &quot;turns_taken&quot;: 3,
+    &quot;satisfied&quot;: true,
+    &quot;sus_answers&quot;: [
+      5,
+      1,
+      5,
+      1,
+      5,
+      1,
+      4,
+      1,
+      5,
+      1
+    ],
+    &quot;cost_usd&quot;: 0.33016409999999996
+  }
+]</code></pre>
+      </details>
+    </section>
+    </section>
+
     <section id="design-notes">
       <h2>Design notes</h2>
       <ul>
@@ -554,7 +963,10 @@ cp .env.example .env  # add your ANTHROPIC_API_KEY
 design-gan viewer      # http://127.0.0.1:8000
 
 # Or one evolution loop from the terminal
-design-gan run "A landing page for a weekend cycling tour in rural Vermont."</code></pre>
+design-gan run "A landing page for a weekend cycling tour in rural Vermont."
+
+# The conversation loop, for evolving an assistant against a goal
+design-gan converse "I keep procrastinating on writing my thesis. How do I actually start?"</code></pre>
       <p>
         Source, setup details, and the Fly.io deploy config are in the
         <a href="https://github.com/jessholbrook/design-gan">GitHub repository</a>.
@@ -681,10 +1093,11 @@ design-gan run "A landing page for a weekend cycling tour in rural Vermont."</co
 
     <footer>
       <p>
-        An autoresearch-style experiment. Generator and critic are both Claude
-        Sonnet. The run above is a real six-iteration execution of the loop
-        (this page shows the first four, the ones that shaped the peak); all
-        screenshots, feedback, and SUS answers are verbatim from the model.
+        An autoresearch-style experiment. Generator, critic, and user
+        simulator are all Claude Sonnet. Both runs on this page are real
+        executions of the loop against the stated briefs; every screenshot,
+        transcript, SUS/CUS answer, feedback line, and suggestion is verbatim
+        from the model.
         <a href="https://github.com/jessholbrook/design-gan">Source on GitHub</a>.
       </p>
     </footer>
