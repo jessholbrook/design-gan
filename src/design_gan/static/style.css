@@ -378,3 +378,90 @@ a:hover { text-decoration: underline; }
   .sidebar { position: static; max-height: 200px; }
   .new-run .row { grid-template-columns: 1fr 1fr; }
 }
+
+/* ========== Conversation-run additions ========== */
+
+/* Transcript preview that replaces the screenshot thumb on conversation cards. */
+.thumb-transcript {
+  background: var(--bg);
+  padding: 10px;
+  line-height: 1.35;
+  height: 180px;
+  overflow: hidden;
+  display: flex;
+}
+.thumb-transcript:hover { background: #ebe9e4; text-decoration: none; }
+.thumb-empty {
+  align-self: center;
+  margin: auto;
+  font-size: 12px;
+}
+.transcript-preview {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  width: 100%;
+  overflow: hidden;
+}
+.bubble {
+  padding: 6px 10px;
+  border-radius: 8px;
+  font-size: 11px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  max-height: 64px;
+  overflow: hidden;
+}
+.bubble-role {
+  font-size: 9px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+.bubble-text { color: var(--text); line-height: 1.35; }
+.bubble-user { background: #eff6ff; align-self: flex-start; max-width: 85%; }
+.bubble-assistant { background: #f0fdf4; align-self: flex-end; max-width: 85%; }
+
+/* Full transcript view (opened when you click the card thumb). */
+.transcript-full {
+  max-width: 760px;
+  margin: 24px auto 80px;
+  padding: 0 24px;
+}
+.transcript-full h1 {
+  font-size: 20px;
+  margin: 8px 0 4px;
+}
+.transcript-meta {
+  margin-bottom: 24px;
+  font-size: 13px;
+}
+.transcript-body {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+.transcript-body .bubble {
+  max-height: none;
+  font-size: 14px;
+  padding: 12px 16px;
+  border-radius: 12px;
+  max-width: 80%;
+}
+.transcript-body .bubble-role { font-size: 10px; }
+.transcript-body .bubble-text { white-space: pre-wrap; }
+
+/* Kind selector in the new-run form. */
+.new-run select {
+  font: inherit;
+  padding: 8px 10px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: #fff;
+  color: var(--text);
+}
+
+/* Author display:flex on labels beats the built-in display:none for [hidden] —
+   restore the hide behavior for the kind-toggled fields. */
+.new-run [hidden] { display: none !important; }

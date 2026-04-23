@@ -295,6 +295,125 @@ class TestBootSweep:
         assert "abandoned" in (run["error"] or "")
 
 
+class TestConversationRoutes:
+    """Routes specific to conversation runs: transcript JSON + styled view."""
+
+    @pytest.fixture
+    def convo_client(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> TestClient:
+        monkeypatch.setenv("DESIGN_GAN_RUNS_DIR", str(tmp_path))
+        import json as _json
+        from design_gan import viewer
+        from design_gan.storage import IterationRecord, Storage
+
+        # Seed a conversation run with a transcript artifact on disk.
+        store = Storage(tmp_path / "design-gan.sqlite")
+        rid = store.create_run("how to make cold brew", "m", kind="conversation")
+        iter_dir = tmp_path / f"run_{rid:04d}" / "iter_001"
+        iter_dir.mkdir(parents=True, exist_ok=True)
+        transcript = {
+            "transcript": [
+                {"role": "user", "content": "How do I make cold brew?"},
+                {"role": "assistant", "content": "1:4 coffee to water, steep 18h cold."},
+            ],
+            "satisfied": True,
+            "turns_taken": 1,
+            "total_cost_usd": 0.04,
+        }
+        (iter_dir / "transcript.json").write_text(_json.dumps(transcript))
+        (iter_dir / "system_prompt.txt").write_text("Be concrete.")
+        store.save_iteration(IterationRecord(
+            run_id=rid, iter=1, html="Be concrete.", sus_score=75.0,
+            axe_penalty=0.0, composite_score=75.0, sus_answers=[4, 2]*5,
+            feedback="good", suggestions=["tighten"], artifacts_dir=str(iter_dir),
+            cost_usd=0.04,
+        ))
+        store.finish_run(rid, 1, 75.0, "converged")
+
+        return TestClient(viewer.app)
+
+    def test_transcript_json_served(self, convo_client: TestClient):
+        r = convo_client.get("/runs/1/iters/1/transcript")
+        assert r.status_code == 200
+        assert "cold brew" in r.text
+        assert r.headers["content-type"].startswith("application/json")
+
+    def test_transcript_view_renders_bubbles(self, convo_client: TestClient):
+        r = convo_client.get("/runs/1/iters/1/transcript-view")
+        assert r.status_code == 200
+        assert "bubble-user" in r.text
+        assert "bubble-assistant" in r.text
+        assert "How do I make cold brew?" in r.text
+        assert "1:4 coffee to water" in r.text
+
+    def test_transcript_view_missing_is_404(self, convo_client: TestClient):
+        r = convo_client.get("/runs/1/iters/99/transcript-view")
+        assert r.status_code == 404
+
+    def test_run_detail_uses_conversation_card(self, convo_client: TestClient):
+        r = convo_client.get("/runs/1")
+        assert r.status_code == 200
+        # Conversation card shows transcript preview, not <img src=screenshot>.
+        assert "thumb-transcript" in r.text
+        assert 'data-kind="conversation"' in r.text
+        # And CUS label instead of SUS.
+        assert "CUS" in r.text
+
+
+class TestStartRunKindBranching:
+    """POST /api/runs with kind=conversation must route through the conversation loop."""
+
+    def test_kind_conversation_uses_conversation_loop(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ):
+        monkeypatch.setenv("DESIGN_GAN_RUNS_DIR", str(tmp_path))
+        from design_gan import orchestrator, viewer
+
+        calls = {"design": 0, "conversation": 0}
+        monkeypatch.setattr(
+            orchestrator, "run_loop_sync",
+            lambda *a, **kw: calls.__setitem__("design", calls["design"] + 1),
+        )
+        monkeypatch.setattr(
+            orchestrator, "run_conversation_loop_sync",
+            lambda *a, **kw: calls.__setitem__("conversation", calls["conversation"] + 1),
+        )
+
+        c = TestClient(viewer.app)
+        r = c.post("/api/runs", json={"brief": "x", "kind": "conversation"})
+        assert r.status_code == 200
+        # Backgrounded via asyncio.create_task; give it a beat.
+        import time
+        time.sleep(0.2)
+        assert calls["conversation"] == 1
+        assert calls["design"] == 0
+
+    def test_kind_design_still_uses_design_loop(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ):
+        monkeypatch.setenv("DESIGN_GAN_RUNS_DIR", str(tmp_path))
+        from design_gan import orchestrator, viewer
+
+        calls = {"design": 0, "conversation": 0}
+        monkeypatch.setattr(
+            orchestrator, "run_loop_sync",
+            lambda *a, **kw: calls.__setitem__("design", calls["design"] + 1),
+        )
+        monkeypatch.setattr(
+            orchestrator, "run_conversation_loop_sync",
+            lambda *a, **kw: calls.__setitem__("conversation", calls["conversation"] + 1),
+        )
+
+        c = TestClient(viewer.app)
+        r = c.post("/api/runs", json={"brief": "x"})
+        assert r.status_code == 200
+        import time
+        time.sleep(0.2)
+        assert calls["design"] == 1
+        assert calls["conversation"] == 0
+
+
 class TestErroredRunDisplay:
     """A run that never completed an iteration shows '—' for best-score, not -1."""
 

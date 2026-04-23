@@ -92,6 +92,42 @@ def list_runs(
 
 
 @app.command()
+def converse(
+    goal: str = typer.Argument(..., help="The user's goal for the conversation."),
+    max_iters: int = typer.Option(8, help="Maximum generate/converse/critique iterations."),
+    max_turns: int = typer.Option(5, help="Max assistant turns per conversation."),
+    patience: int = typer.Option(3, help="Stop after this many iters without improvement."),
+    tolerance: float = typer.Option(1.0, help="Min composite-score gain to count as progress."),
+    model: str = typer.Option(None, help="Override the Claude model ID."),
+    runs_dir: Path = typer.Option(None, help="Where to store per-iteration artifacts."),
+) -> None:
+    """Evolve an assistant's system prompt over a short conversation toward GOAL."""
+    load_dotenv(override=True)
+    if not os.environ.get("ANTHROPIC_API_KEY"):
+        os.environ.pop("ANTHROPIC_API_KEY", None)
+    runs_dir = runs_dir or _default_runs_dir()
+    cfg = orchestrator.LoopConfig(
+        brief=goal,
+        runs_dir=runs_dir,
+        db_path=runs_dir / "design-gan.sqlite",
+        model=model or _default_model(),
+        max_iters=max_iters,
+        patience=patience,
+        tolerance=tolerance,
+        max_conversation_turns=max_turns,
+    )
+    result = orchestrator.run_conversation_loop_sync(cfg, console=console)
+    console.rule("[bold green]Done")
+    best_score_txt = f"{result.best_score:.1f}" if result.best_score is not None else "—"
+    best_iter_txt = str(result.best_iter) if result.best_iter else "—"
+    console.print(
+        f"run_id={result.run_id}  best_iter={best_iter_txt}  "
+        f"best_score={best_score_txt}  iters={result.iterations}  "
+        f"status={result.status}"
+    )
+
+
+@app.command()
 def demo(
     runs_dir: Path = typer.Option(None, help="Where to write demo artifacts."),
 ) -> None:

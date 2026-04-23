@@ -169,7 +169,13 @@ def _new_run_form() -> str:
   <h2>Start a new run</h2>
   {gated_note}
   <form id="new-run-form"{gated_attr}>
-    <label>Brief
+    <label>Kind
+      <select name="kind">
+        <option value="design">Design — evolve a single-page website</option>
+        <option value="conversation">Conversation — evolve an assistant for a 1–5 turn chat</option>
+      </select>
+    </label>
+    <label data-brief-label>Brief
       <textarea name="brief" rows="3" required
         placeholder="A landing page for a weekend cycling tour in rural Vermont."></textarea>
     </label>
@@ -179,6 +185,9 @@ def _new_run_form() -> str:
       <label>Tolerance<input type="number" name="tolerance" value="1.0" step="0.5" min="0" /></label>
       <label>Model<input type="text" name="model" value="{html.escape(_default_model())}" /></label>
     </div>
+    <label data-conversation-only hidden>Max conversation turns
+      <input type="number" name="max_conversation_turns" value="5" min="1" max="10" />
+    </label>
     {token_field}
     <button type="submit">Run</button>
     <span id="new-run-status" class="muted"></span>
@@ -186,10 +195,58 @@ def _new_run_form() -> str:
 </section>"""
 
 
-def _iter_card_html(run_id: int, it: dict) -> str:
+def _transcript_preview_html(run_id: int, it: int) -> str:
+    """Compact preview of the first user+assistant turns for the card thumb."""
+    path = _runs_dir() / f"run_{run_id:04d}" / f"iter_{it:03d}" / "transcript.json"
+    if not path.exists():
+        return '<div class="thumb-empty muted">no transcript</div>'
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+        turns = data.get("transcript", [])[:2]
+    except Exception:
+        return '<div class="thumb-empty muted">transcript unreadable</div>'
+    bubbles = []
+    for t in turns:
+        role = t.get("role", "?")
+        content = t.get("content", "")
+        if len(content) > 160:
+            content = content[:160].rstrip() + "…"
+        bubbles.append(
+            f'<div class="bubble bubble-{role}">'
+            f'<span class="bubble-role">{html.escape(role)}</span>'
+            f'<span class="bubble-text">{html.escape(content)}</span>'
+            f'</div>'
+        )
+    return '<div class="transcript-preview">' + "".join(bubbles) + '</div>'
+
+
+def _iter_card_html(run_id: int, it: dict, kind: str = "design") -> str:
     suggestions = "".join(
         f"<li>{html.escape(s)}</li>" for s in (it.get("suggestions") or [])
     )
+    if kind == "conversation":
+        thumb = (
+            f'<a href="/runs/{run_id}/iters/{it["iter"]}/transcript-view" '
+            f'target="_blank" class="thumb thumb-transcript">'
+            f'{_transcript_preview_html(run_id, it["iter"])}'
+            f"</a>"
+        )
+        stats = (
+            f"<span>CUS <b>{it['sus_score']:.0f}</b></span>"
+            f"<span>penalty <b>{it['axe_penalty']:.0f}</b></span>"
+        )
+    else:
+        thumb = (
+            f'<a href="/runs/{run_id}/iters/{it["iter"]}/site" target="_blank" '
+            f'class="thumb">'
+            f'<img src="/runs/{run_id}/iters/{it["iter"]}/screenshot" '
+            f'loading="lazy" alt="Iter {it["iter"]}" />'
+            f"</a>"
+        )
+        stats = (
+            f"<span>SUS <b>{it['sus_score']:.0f}</b></span>"
+            f"<span>a11y penalty <b>{it['axe_penalty']:.0f}</b></span>"
+        )
     return f"""<article class="iter-card" data-iter="{it['iter']}">
   <header>
     <span class="iter-num">#{it['iter']}</span>
@@ -197,12 +254,9 @@ def _iter_card_html(run_id: int, it: dict) -> str:
       {it['composite_score']:.0f}
     </span>
   </header>
-  <a href="/runs/{run_id}/iters/{it['iter']}/site" target="_blank" class="thumb">
-    <img src="/runs/{run_id}/iters/{it['iter']}/screenshot" loading="lazy" alt="Iter {it['iter']}" />
-  </a>
+  {thumb}
   <div class="stats">
-    <span>SUS <b>{it['sus_score']:.0f}</b></span>
-    <span>a11y penalty <b>{it['axe_penalty']:.0f}</b></span>
+    {stats}
   </div>
   <p class="feedback">{html.escape(it['feedback'])}</p>
   <details>
@@ -254,15 +308,17 @@ def run_detail(run_id: int) -> str:
     if not run:
         raise HTTPException(404, "run not found")
     iters = _store().iterations_for_run(run_id)
+    kind = run.get("kind") or "design"
 
     best_score = run.get("best_score")
     best_score_txt = f"{best_score:.0f}" if best_score is not None else "—"
-    cards = "".join(_iter_card_html(run_id, it) for it in iters)
+    cards = "".join(_iter_card_html(run_id, it, kind=kind) for it in iters)
 
     running = run["status"] == "running"
     attrs = (
         f' data-run-id="{run_id}" data-running="{"1" if running else "0"}"'
         f' data-last-iter="{iters[-1]["iter"] if iters else 0}"'
+        f' data-kind="{html.escape(kind)}"'
     )
     cur_iter = run.get("current_iter")
     cur_phase = run.get("current_phase")
@@ -344,6 +400,52 @@ def site(run_id: int, it: int) -> str:
     return path.read_text(encoding="utf-8")
 
 
+@app.get("/runs/{run_id}/iters/{it}/transcript")
+def transcript_json(run_id: int, it: int) -> FileResponse:
+    path = _runs_dir() / f"run_{run_id:04d}" / f"iter_{it:03d}" / "transcript.json"
+    if not path.exists():
+        raise HTTPException(404)
+    return FileResponse(path, media_type="application/json")
+
+
+@app.get("/runs/{run_id}/iters/{it}/transcript-view", response_class=HTMLResponse)
+def transcript_view(run_id: int, it: int) -> str:
+    """Styled render of the transcript, opened when a user clicks the card thumb."""
+    path = _runs_dir() / f"run_{run_id:04d}" / f"iter_{it:03d}" / "transcript.json"
+    if not path.exists():
+        raise HTTPException(404)
+    data = json.loads(path.read_text(encoding="utf-8"))
+    turns = data.get("transcript", [])
+    satisfied = data.get("satisfied")
+    turns_taken = data.get("turns_taken")
+
+    bubbles = []
+    for t in turns:
+        role = t.get("role", "?")
+        content = t.get("content", "")
+        bubbles.append(
+            f'<div class="bubble bubble-{role}">'
+            f'<div class="bubble-role">{html.escape(role)}</div>'
+            f'<div class="bubble-text">{html.escape(content)}</div>'
+            f"</div>"
+        )
+    meta = (
+        f'<div class="transcript-meta muted">'
+        f'turns: {turns_taken} · '
+        f'satisfied: {"yes" if satisfied else "no"} · '
+        f'<a href="/runs/{run_id}">back to run #{run_id}</a>'
+        f"</div>"
+    )
+    body = (
+        f'<main class="transcript-full">'
+        f'<h1>Run {run_id} · iter {it} · transcript</h1>'
+        f"{meta}"
+        f'<div class="transcript-body">{"".join(bubbles)}</div>'
+        f"</main>"
+    )
+    return _layout(f"design-gan · run {run_id} iter {it} transcript", body)
+
+
 # ---------- Routes: JSON API ----------
 
 
@@ -370,6 +472,8 @@ class StartRunRequest(BaseModel):
     tolerance: float = Field(default=1.0, ge=0.0, le=100.0)
     model: str | None = None
     token: str | None = None  # required iff DESIGN_GAN_START_TOKEN is set
+    kind: str = Field(default="design", pattern="^(design|conversation)$")
+    max_conversation_turns: int = Field(default=5, ge=1, le=10)
 
 
 def _check_start_token(req: StartRunRequest, authorization: str | None) -> None:
@@ -429,6 +533,12 @@ async def start_run(
 
     runs_dir = _runs_dir()
     model = req.model or _default_model()
+    # When DESIGN_GAN_CRITICS=trio is set we want the conversation CUS trio
+    # for conversation runs, and the design TRIO for design runs.
+    enabled_critics = _configured_critics()
+    if enabled_critics and req.kind == "conversation":
+        enabled_critics = list(critic.CUS_TRIO)
+
     cfg = orchestrator.LoopConfig(
         brief=req.brief,
         runs_dir=runs_dir,
@@ -438,12 +548,18 @@ async def start_run(
         patience=req.patience,
         tolerance=req.tolerance,
         daily_budget_usd=budget,
-        critics=_configured_critics(),
+        critics=enabled_critics,
+        max_conversation_turns=req.max_conversation_turns,
     )
     # Pre-create the run so we can return its id immediately.
-    run_id = _store().create_run(req.brief, model)
+    run_id = _store().create_run(req.brief, model, kind=req.kind)
+    entry = (
+        orchestrator.run_conversation_loop_sync
+        if req.kind == "conversation"
+        else orchestrator.run_loop_sync
+    )
     # Run the loop in a background thread so the event loop stays free to serve SSE.
-    asyncio.create_task(asyncio.to_thread(orchestrator.run_loop_sync, cfg, None, run_id))
+    asyncio.create_task(asyncio.to_thread(entry, cfg, None, run_id))
     return JSONResponse({"run_id": run_id})
 
 

@@ -1,7 +1,8 @@
 // New-run form: POST /api/runs, then redirect to the new run detail page.
 // When the server gates runs with DESIGN_GAN_START_TOKEN, the form carries
 // a token field; we cache the value in localStorage so returning visitors
-// don't have to paste it every time.
+// don't have to paste it every time. The kind selector toggles the brief
+// placeholder text and reveals conversation-only fields.
 (() => {
   const form = document.getElementById('new-run-form');
   if (!form) return;
@@ -12,16 +13,47 @@
     const cached = localStorage.getItem(TOKEN_KEY);
     if (cached) tokenInput.value = cached;
   }
+
+  // Kind selector: toggle conversation-only fields + brief placeholder.
+  const kindSel = form.querySelector('select[name="kind"]');
+  const briefTA = form.querySelector('textarea[name="brief"]');
+  const briefLabel = form.querySelector('[data-brief-label]');
+  const conversationOnly = form.querySelectorAll('[data-conversation-only]');
+  const briefPlaceholders = {
+    design: 'A landing page for a weekend cycling tour in rural Vermont.',
+    conversation: "How do I make cold brew coffee at home?",
+  };
+  function applyKind() {
+    const kind = kindSel ? kindSel.value : 'design';
+    if (briefTA) briefTA.placeholder = briefPlaceholders[kind] || '';
+    if (briefLabel) {
+      briefLabel.firstChild.nodeValue = kind === 'conversation' ? 'Goal' : 'Brief';
+    }
+    conversationOnly.forEach((el) => {
+      if (kind === 'conversation') el.removeAttribute('hidden');
+      else el.setAttribute('hidden', '');
+    });
+  }
+  if (kindSel) {
+    kindSel.addEventListener('change', applyKind);
+    applyKind();
+  }
+
   form.addEventListener('submit', async (e) => {
     e.preventDefault();
     const fd = new FormData(form);
+    const kind = fd.get('kind') || 'design';
     const body = {
       brief: fd.get('brief'),
       max_iters: Number(fd.get('max_iters')),
       patience: Number(fd.get('patience')),
       tolerance: Number(fd.get('tolerance')),
       model: fd.get('model') || null,
+      kind,
     };
+    if (kind === 'conversation') {
+      body.max_conversation_turns = Number(fd.get('max_conversation_turns')) || 5;
+    }
     const token = fd.get('token');
     if (token) {
       body.token = token;
@@ -109,18 +141,29 @@
     const cls = score >= 80 ? 'score-good' : score >= 60 ? 'score-ok' : 'score-bad';
     const suggestions = (it.suggestions || []).map((s) =>
       `<li>${escapeHtml(s)}</li>`).join('');
+    const kind = document.body.dataset.kind || 'design';
+    let thumb, stats;
+    if (kind === 'conversation') {
+      thumb = `<a href="/runs/${runId}/iters/${it.iter}/transcript-view"
+                  target="_blank" class="thumb thumb-transcript">
+                 <div class="thumb-empty muted">open transcript →</div>
+               </a>`;
+      stats = `<span>CUS <b>${it.sus_score.toFixed(0)}</b></span>
+               <span>penalty <b>${it.axe_penalty.toFixed(0)}</b></span>`;
+    } else {
+      thumb = `<a href="/runs/${runId}/iters/${it.iter}/site" target="_blank" class="thumb">
+                 <img src="/runs/${runId}/iters/${it.iter}/screenshot" alt="Iter ${it.iter}" />
+               </a>`;
+      stats = `<span>SUS <b>${it.sus_score.toFixed(0)}</b></span>
+               <span>a11y penalty <b>${it.axe_penalty.toFixed(0)}</b></span>`;
+    }
     return `<article class="iter-card appearing" data-iter="${it.iter}">
       <header>
         <span class="iter-num">#${it.iter}</span>
         <span class="badge ${cls}">${score.toFixed(0)}</span>
       </header>
-      <a href="/runs/${runId}/iters/${it.iter}/site" target="_blank" class="thumb">
-        <img src="/runs/${runId}/iters/${it.iter}/screenshot" alt="Iter ${it.iter}" />
-      </a>
-      <div class="stats">
-        <span>SUS <b>${it.sus_score.toFixed(0)}</b></span>
-        <span>a11y penalty <b>${it.axe_penalty.toFixed(0)}</b></span>
-      </div>
+      ${thumb}
+      <div class="stats">${stats}</div>
       <p class="feedback">${escapeHtml(it.feedback)}</p>
       <details>
         <summary>Suggestions</summary>
