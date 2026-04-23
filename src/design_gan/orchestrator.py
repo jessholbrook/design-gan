@@ -31,6 +31,9 @@ class LoopConfig:
     # Hard stop when cumulative iteration cost over the last 24h crosses this.
     # Checked before each iteration. None disables the check (local / CLI use).
     daily_budget_usd: float | None = None
+    # When set, each iteration runs this list of critics in parallel and
+    # aggregates their scores. None = single Usability critic (backward compat).
+    critics: list[critic.CriticProfile] | None = None
 
 
 @dataclass
@@ -109,14 +112,28 @@ async def run_loop(
 
                 # --- critique ----------------------------------------------
                 store.update_progress(run_id, i, PHASE_CRITIQUING)
-                console.print("[dim]critiquing...[/dim]")
-                sus, crit_cost = await critic.critique(
-                    cfg.model,
-                    screenshot_path=artifacts["screenshot"].resolve(),
-                    dom_html=render.dom_html,
-                    axe_violations=render.axe_violations,
-                    brief=cfg.brief,
-                )
+                critic_breakdown: list[dict] | None = None
+                if cfg.critics:
+                    console.print(
+                        f"[dim]critiquing (ensemble of {len(cfg.critics)})...[/dim]"
+                    )
+                    sus, critic_breakdown, crit_cost = await critic.critique_ensemble(
+                        cfg.model,
+                        cfg.critics,
+                        screenshot_path=artifacts["screenshot"].resolve(),
+                        dom_html=render.dom_html,
+                        axe_violations=render.axe_violations,
+                        brief=cfg.brief,
+                    )
+                else:
+                    console.print("[dim]critiquing...[/dim]")
+                    sus, crit_cost = await critic.critique(
+                        cfg.model,
+                        screenshot_path=artifacts["screenshot"].resolve(),
+                        dom_html=render.dom_html,
+                        axe_violations=render.axe_violations,
+                        brief=cfg.brief,
+                    )
                 iter_cost_usd += crit_cost
 
                 result = scorer.score(list(sus.sus), render.axe_violations)
@@ -133,6 +150,7 @@ async def run_loop(
                         suggestions=sus.suggestions,
                         artifacts_dir=str(iter_dir),
                         cost_usd=iter_cost_usd,
+                        critic_breakdown=critic_breakdown,
                     )
                 )
             except Exception as e:

@@ -43,6 +43,7 @@ CREATE TABLE IF NOT EXISTS iterations (
     suggestions TEXT NOT NULL,
     artifacts_dir TEXT NOT NULL,
     cost_usd REAL NOT NULL DEFAULT 0.0,
+    critic_breakdown TEXT,    -- JSON list of per-critic responses; NULL for single-critic
     UNIQUE(run_id, iter)
 );
 
@@ -64,6 +65,9 @@ class IterationRecord:
     suggestions: list[str]
     artifacts_dir: str
     cost_usd: float = 0.0
+    # Optional per-critic breakdown when the run used an ensemble. Each item:
+    #   {"name": str, "sus": list[int], "feedback": str, "suggestions": list[str]}
+    critic_breakdown: list[dict[str, Any]] | None = None
 
 
 class Storage:
@@ -91,6 +95,8 @@ class Storage:
         iter_cols = {row["name"] for row in conn.execute("PRAGMA table_info(iterations)")}
         if "cost_usd" not in iter_cols:
             conn.execute("ALTER TABLE iterations ADD COLUMN cost_usd REAL NOT NULL DEFAULT 0.0")
+        if "critic_breakdown" not in iter_cols:
+            conn.execute("ALTER TABLE iterations ADD COLUMN critic_breakdown TEXT")
 
     @contextmanager
     def _conn(self) -> Iterator[sqlite3.Connection]:
@@ -141,15 +147,18 @@ class Storage:
             )
 
     def save_iteration(self, rec: IterationRecord) -> None:
+        breakdown_json = (
+            json.dumps(rec.critic_breakdown) if rec.critic_breakdown is not None else None
+        )
         with self._conn() as c:
             c.execute(
                 """
                 INSERT INTO iterations(
                     run_id, iter, created_at, html, sus_score, axe_penalty,
                     composite_score, sus_answers, feedback, suggestions, artifacts_dir,
-                    cost_usd
+                    cost_usd, critic_breakdown
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     rec.run_id,
@@ -164,6 +173,7 @@ class Storage:
                     json.dumps(rec.suggestions),
                     rec.artifacts_dir,
                     rec.cost_usd,
+                    breakdown_json,
                 ),
             )
             # Roll iteration cost up onto the parent run for cheap dashboard reads.
@@ -193,6 +203,8 @@ class Storage:
                 d = dict(r)
                 d["sus_answers"] = json.loads(d["sus_answers"])
                 d["suggestions"] = json.loads(d["suggestions"])
+                if d.get("critic_breakdown"):
+                    d["critic_breakdown"] = json.loads(d["critic_breakdown"])
                 out.append(d)
             return out
 

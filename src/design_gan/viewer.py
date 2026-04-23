@@ -15,7 +15,7 @@ from fastapi import FastAPI, Header, HTTPException
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, StreamingResponse
 from pydantic import BaseModel, Field
 
-from . import orchestrator, storage
+from . import critic, orchestrator, storage
 
 
 def _runs_dir() -> Path:
@@ -49,6 +49,18 @@ def _daily_budget_usd() -> float | None:
 ABANDONED_RUN_TIMEOUT_SECONDS = int(
     os.environ.get("DESIGN_GAN_ABANDONED_TIMEOUT_S", "600")
 )
+
+
+def _configured_critics() -> list[critic.CriticProfile] | None:
+    """DESIGN_GAN_CRITICS=trio opts into the 3-critic ensemble.
+
+    Unset or 'solo' keeps the single Usability critic (backward compat).
+    Runs triggered while this env var is set will use the ensemble.
+    """
+    mode = (os.environ.get("DESIGN_GAN_CRITICS") or "").strip().lower()
+    if mode == "trio":
+        return list(critic.TRIO)
+    return None
 
 
 def _store() -> storage.Storage:
@@ -377,6 +389,7 @@ def api_config() -> JSONResponse:
     """Surface gating + budget state so the UI can show accurate affordances."""
     budget = _daily_budget_usd()
     used = _store().cost_usd_last_24h() if budget is not None else 0.0
+    critics = _configured_critics()
     return JSONResponse({
         "requires_token": _required_start_token() is not None,
         "daily_budget_usd": budget,
@@ -384,6 +397,7 @@ def api_config() -> JSONResponse:
         "budget_remaining_usd": (
             round(max(0.0, budget - used), 4) if budget is not None else None
         ),
+        "critics": [c.name for c in critics] if critics else ["Usability"],
     })
 
 
@@ -424,6 +438,7 @@ async def start_run(
         patience=req.patience,
         tolerance=req.tolerance,
         daily_budget_usd=budget,
+        critics=_configured_critics(),
     )
     # Pre-create the run so we can return its id immediately.
     run_id = _store().create_run(req.brief, model)
