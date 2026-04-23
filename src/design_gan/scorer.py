@@ -53,3 +53,22 @@ def score(sus_answers: list[int], axe_violations: list[dict[str, Any]]) -> Score
             "axe_violation_count": len(axe_violations),
         },
     )
+
+
+def score_from_penalty(
+    answers: list[int], penalty: float, breakdown: dict[str, Any] | None = None
+) -> Score:
+    """Shared path for SUS/CUS: takes answers + a pre-computed penalty.
+
+    Conversation runs use this directly — their objective penalty is computed
+    in transcript_renderer and doesn't look like axe violations.
+    """
+    base = sus_score(answers)
+    capped_penalty = min(max(penalty, 0.0), 30.0)
+    composite = max(0.0, min(100.0, base - capped_penalty))
+    return Score(
+        sus=base,
+        axe_penalty=capped_penalty,
+        composite=round(composite, 2),
+        breakdown={"answers": list(answers), **(breakdown or {})},
+    )

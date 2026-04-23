@@ -12,7 +12,9 @@ from typing import Annotated, Any
 from claude_agent_sdk import ClaudeAgentOptions, ResultMessage, query
 from pydantic import BaseModel, Field, ValidationError
 
-# SUS items. Odd items are positive, even items are negative — see scorer.py.
+# SUS items for design runs. Odd (1-indexed) items are positive, even items are
+# negative — see scorer.py. CUS follows the same alternating pattern so the
+# same sus_score math works for both.
 SUS_ITEMS = [
     "I think that I would like to use this website frequently.",
     "I found the website unnecessarily complex.",
@@ -24,6 +26,21 @@ SUS_ITEMS = [
     "I found the website very cumbersome to use.",
     "I felt very confident using the website.",
     "I needed to learn a lot of things before I could get going with this website.",
+]
+
+# Conversation Usability Scale — SUS-parallel 10-item Likert, filled by the
+# user simulator at end-of-conversation. Odd items positive, even negative.
+CUS_ITEMS = [
+    "The assistant addressed what I actually asked.",
+    "Its responses felt generic or filler.",
+    "I got actionable information I could use.",
+    "The assistant misunderstood my intent.",
+    "The conversation felt natural and easy.",
+    "The assistant was excessively long-winded.",
+    "I'd trust its answers on similar topics.",
+    "It hedged or was vague when I needed specifics.",
+    "I reached resolution on my goal.",
+    "I had to repeat or rephrase things it should have caught.",
 ]
 
 
@@ -329,6 +346,252 @@ async def critique_ensemble(
     responses = [r for r, _ in results]
     total_cost = sum(c for _, c in results)
 
+    aggregated = _aggregate(profiles, responses)
+    breakdown = [
+        {
+            "name": p.name,
+            "sus": list(r.sus),
+            "feedback": r.feedback,
+            "suggestions": list(r.suggestions),
+        }
+        for p, r in zip(profiles, responses)
+    ]
+    return aggregated, breakdown, total_cost
+
+
+# ----------------------------------------------------------------------------
+# CUS critic — conversation runs
+# ----------------------------------------------------------------------------
+
+_CUS_CRITIC_SYSTEM = """You are a __ROLE__ scoring an AI assistant's performance in \
+a short conversation against a user's goal.
+
+You will be given:
+- The user's goal for the conversation.
+- The full transcript (user and assistant turns, in order).
+- An objective-metric summary covering repetition, boilerplate, length, and
+  whether the user declared resolution.
+- The assistant's system prompt that shaped this iteration.
+
+__LENS__
+
+Score the assistant from the *user's* perspective, using the Conversation
+Usability Scale (CUS) — 10 items, each 1-5 Likert:
+  1 = Strongly Disagree, 2 = Disagree, 3 = Neutral, 4 = Agree, 5 = Strongly Agree.
+
+Be honest and calibrated. Do not be generous. An assistant that produced a
+competent-but-generic answer with some hedging should score in the 50-70 range.
+85+ is reserved for conversations where the assistant got to the point,
+answered concretely, and the user plainly reached resolution.
+
+Output contract:
+- Return ONLY one fenced JSON code block: ```json { ... } ```
+- No prose before or after the block.
+- JSON schema:
+  {
+    "sus": [int,int,int,int,int,int,int,int,int,int],   // ten 1-5 CUS answers in order
+    "feedback": "2-4 sentence overall assessment",
+    "suggestions": ["concrete suggestion 1", "suggestion 2", ...]  // 3-6 items
+  }
+"""
+
+
+# Three ensemble lenses for CUS critique, mirroring the design trio.
+CUS_USABILITY_CRITIC = CriticProfile(
+    name="Conversation usability",
+    role="UX researcher",
+    lens=(
+        "Weight whether the assistant moved the user efficiently toward the "
+        "stated goal, whether clarifying questions were warranted, and whether "
+        "the conversation ended cleanly."
+    ),
+)
+
+CUS_TONE_CRITIC = CriticProfile(
+    name="Tone & register",
+    role="senior editor",
+    lens=(
+        "Weight voice, concreteness, and anti-boilerplate. You care first "
+        "about whether the assistant sounded like a knowledgeable human and "
+        "avoided LLM tells like 'Certainly!' and 'I'd be happy to help'."
+    ),
+)
+
+CUS_TRUST_CRITIC = CriticProfile(
+    name="Trust & specificity",
+    role="subject-matter critic",
+    lens=(
+        "Weight factual specificity and whether answers gave the user real, "
+        "usable detail versus generic platitudes. Penalize vague hedging and "
+        "the kind of non-committal answers that leave the user doing the work."
+    ),
+)
+
+CUS_TRIO = [CUS_USABILITY_CRITIC, CUS_TONE_CRITIC, CUS_TRUST_CRITIC]
+
+# Default single CUS critic (aligns with non-ensemble runs).
+DEFAULT_CUS_CRITIC = CUS_USABILITY_CRITIC
+
+
+def _format_transcript(transcript: list[dict[str, Any]]) -> str:
+    if not transcript:
+        return "(empty transcript)"
+    lines = []
+    for i, t in enumerate(transcript):
+        label = "User" if t["role"] == "user" else "Assistant"
+        lines.append(f"[{i}] {label}: {t['content']}")
+    return "\n\n".join(lines)
+
+
+def _summarize_objective(metrics: dict[str, Any]) -> str:
+    bits = [
+        f"assistant turns: {metrics.get('assistant_turn_count', 0)}",
+        f"unresolved: {metrics.get('unresolved')}",
+        f"boilerplate hits: {metrics.get('boilerplate_count', 0)}",
+        f"repetition hits: {len(metrics.get('repetition_hits', []))}",
+        f"length-bloat turns: {len(metrics.get('length_bloat_hits', []))}",
+    ]
+    return "Objective metrics — " + "; ".join(bits)
+
+
+def _build_cus_user_message(
+    *,
+    goal: str,
+    transcript: list[dict[str, Any]],
+    objective_metrics: dict[str, Any],
+    assistant_system_prompt: str,
+) -> str:
+    items_block = "\n".join(f"{i + 1}. {item}" for i, item in enumerate(CUS_ITEMS))
+    return (
+        f"User's goal:\n{goal.strip()}\n\n"
+        f"Assistant's system prompt (what shaped this iteration):\n"
+        f"```text\n{assistant_system_prompt.strip()}\n```\n\n"
+        f"Transcript:\n{_format_transcript(transcript)}\n\n"
+        f"{_summarize_objective(objective_metrics)}\n\n"
+        f"CUS items (answer each 1-5 in order):\n{items_block}"
+    )
+
+
+async def _cus_run_once(
+    model: str, system_prompt: str, user_message: str
+) -> tuple[str, float]:
+    """CUS critic has no filesystem access (transcript is inline text)."""
+    final: str | None = None
+    cost_usd: float = 0.0
+    async for msg in query(
+        prompt=user_message,
+        options=ClaudeAgentOptions(
+            system_prompt=system_prompt,
+            model=model,
+            tools=[],
+            max_turns=2,
+        ),
+    ):
+        if isinstance(msg, ResultMessage):
+            if msg.is_error:
+                raise RuntimeError(f"CUS critic run failed: {msg.result!r}")
+            final = msg.result
+            cost_usd = msg.total_cost_usd or 0.0
+    if not final:
+        raise RuntimeError("CUS critic produced no result.")
+    return final, cost_usd
+
+
+async def _cus_critique_one(
+    model: str,
+    profile: CriticProfile,
+    *,
+    goal: str,
+    transcript: list[dict[str, Any]],
+    objective_metrics: dict[str, Any],
+    assistant_system_prompt: str,
+) -> tuple[SUSResponse, float]:
+    # Override the base template with the CUS version for this call only.
+    system_prompt = (
+        _CUS_CRITIC_SYSTEM
+        .replace("__ROLE__", profile.role)
+        .replace("__LENS__", profile.lens)
+    )
+    user_message = _build_cus_user_message(
+        goal=goal,
+        transcript=transcript,
+        objective_metrics=objective_metrics,
+        assistant_system_prompt=assistant_system_prompt,
+    )
+
+    total_cost: float = 0.0
+    last_error: Exception | None = None
+    for attempt in range(2):
+        raw, cost = await _cus_run_once(model, system_prompt, user_message)
+        total_cost += cost
+        try:
+            payload = _extract_json(raw)
+            return SUSResponse.model_validate_json(payload), total_cost
+        except (ValueError, ValidationError, json.JSONDecodeError) as e:
+            last_error = e
+            user_message = (
+                _build_cus_user_message(
+                    goal=goal,
+                    transcript=transcript,
+                    objective_metrics=objective_metrics,
+                    assistant_system_prompt=assistant_system_prompt,
+                )
+                + "\n\nIMPORTANT: Your previous response was not valid JSON matching the schema. "
+                "Return ONLY a single ```json ... ``` block now."
+            )
+    raise RuntimeError(
+        f"CUS critic '{profile.name}' failed to return valid JSON after 2 attempts: "
+        f"{last_error}"
+    )
+
+
+async def cus_critique(
+    model: str,
+    *,
+    goal: str,
+    transcript: list[dict[str, Any]],
+    objective_metrics: dict[str, Any],
+    assistant_system_prompt: str,
+) -> tuple[SUSResponse, float]:
+    """Single-critic CUS critique. Returns (response, cost_usd)."""
+    return await _cus_critique_one(
+        model,
+        DEFAULT_CUS_CRITIC,
+        goal=goal,
+        transcript=transcript,
+        objective_metrics=objective_metrics,
+        assistant_system_prompt=assistant_system_prompt,
+    )
+
+
+async def cus_critique_ensemble(
+    model: str,
+    profiles: list[CriticProfile],
+    *,
+    goal: str,
+    transcript: list[dict[str, Any]],
+    objective_metrics: dict[str, Any],
+    assistant_system_prompt: str,
+) -> tuple[SUSResponse, list[dict[str, Any]], float]:
+    """Run multiple CUS critics in parallel, aggregate their scores.
+
+    Same shape as critique_ensemble for design runs.
+    """
+    assert profiles, "cus_critique_ensemble requires at least one profile"
+    results = await asyncio.gather(
+        *(
+            _cus_critique_one(
+                model, p,
+                goal=goal,
+                transcript=transcript,
+                objective_metrics=objective_metrics,
+                assistant_system_prompt=assistant_system_prompt,
+            )
+            for p in profiles
+        )
+    )
+    responses = [r for r, _ in results]
+    total_cost = sum(c for _, c in results)
     aggregated = _aggregate(profiles, responses)
     breakdown = [
         {
