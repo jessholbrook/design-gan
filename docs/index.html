@@ -373,22 +373,34 @@
     <section id="the-idea">
       <h2>The idea</h2>
       <p class="lead">
-        Inspired by Andre Karpathy's Autoresearch, this experiment explores how that approach can be applied to basic website designs.   
+        Inspired by Andrej Karpathy's
+        <a href="https://github.com/karpathy/autoresearch">autoresearch</a> —
+        a single agent autonomously evolving an LLM training script against a
+        deterministic loss. This experiment takes the same autonomous-loop
+        paradigm and applies it to artifacts that <em>don't</em> have a clean
+        numeric metric: single-page websites and short conversations.
       </p>
       <p>
-        A <strong>generator</strong> agent writes a standalone HTML document
-        from the brief. A headless Chromium takes a screenshot, dumps the DOM,
-        and runs <a href="https://github.com/dequelabs/axe-core">axe-core</a>
-        for an accessibility check. A <strong>critic</strong>
-        agent then sees the <em>rendered page</em> — not the code — and fills
-        out the 10-item <a href="https://measuringu.com/sus/">System Usability
-        Scale</a>, writes feedback, and a short list of concrete
-        next-step suggestions.
+        Two main differences. First, we split the work into a
+        <strong>generator</strong> and a <strong>critic</strong> — hence the
+        &ldquo;gan&rdquo; in the name — rather than running one agent that
+        both modifies and evaluates. Second, the score is a Claude critic's
+        verdict on a standard usability questionnaire, anchored by objective
+        penalties (<a href="https://github.com/dequelabs/axe-core">axe-core</a>
+        violations for websites; repetition and boilerplate in conversations),
+        because there's no bits-per-byte to minimize.
       </p>
       <p>
-        The suggestions feed the next generator call. The loop stops after a
-        configurable window of iterations that produce no meaningful
-        composite-score gain, or at a hard iteration cap.
+        A generator agent writes a standalone HTML document (or a conversation
+        assistant's system prompt) from the brief. A headless Chromium renders
+        the page — or a user-simulator agent runs the dialogue — and the
+        rendered artifact goes to the critic. The critic fills out the 10-item
+        <a href="https://measuringu.com/sus/">System Usability Scale</a> (or
+        the parallel Conversation Usability Scale), writes feedback, and
+        returns a short list of concrete next-step suggestions that feed the
+        next generator call. The loop stops after a configurable window of
+        iterations produce no meaningful composite-score gain, or at a hard
+        iteration cap.
       </p>
     </section>
 
