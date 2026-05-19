@@ -57,6 +57,31 @@ class TestRunDetail:
         assert 'data-running="0"' in r.text
 
 
+class TestScrub:
+    def test_run_detail_links_to_scrub(self, client: TestClient):
+        r = client.get("/runs/1")
+        assert 'href="/runs/1/scrub"' in r.text
+
+    def test_scrub_renders(self, client: TestClient):
+        r = client.get("/runs/1/scrub")
+        assert r.status_code == 200
+        assert "text/html" in r.headers["content-type"]
+        # Shell scaffold + the hydrating script must be present.
+        assert 'class="scrub"' in r.text
+        assert 'id="scrub-stage"' in r.text
+        assert "/static/scrub.js" in r.text
+
+    def test_scrub_carries_run_and_kind_attrs(self, client: TestClient):
+        r = client.get("/runs/1/scrub")
+        assert 'data-scrub-run-id="1"' in r.text
+        # Seed run is a design run.
+        assert 'data-kind="design"' in r.text
+
+    def test_scrub_unknown_run_is_404(self, client: TestClient):
+        r = client.get("/runs/999/scrub")
+        assert r.status_code == 404
+
+
 class TestArtifactRoutes:
     def test_screenshot_served(self, client: TestClient):
         r = client.get("/runs/1/iters/1/screenshot")
@@ -83,6 +108,11 @@ class TestStatic:
         r = client.get("/static/style.css")
         assert r.status_code == 200
         assert "iter-card" in r.text
+
+    def test_serves_scrub_js(self, client: TestClient):
+        r = client.get("/static/scrub.js")
+        assert r.status_code == 200
+        assert "scrub-stage" in r.text
 
     def test_static_traversal_rejected(self, client: TestClient):
         # Path traversal via substring check.
@@ -122,7 +152,19 @@ class TestJsonApi:
         assert "run" in data and "iterations" in data
         assert len(data["iterations"]) == 4
         it = data["iterations"][0]
-        assert set(["iter", "composite_score", "feedback", "suggestions"]).issubset(it)
+        # The scrubber (static/scrub.js) reads every one of these per iteration;
+        # this locks the JSON contract it depends on.
+        assert set(
+            [
+                "iter",
+                "composite_score",
+                "sus_score",
+                "axe_penalty",
+                "sus_answers",
+                "feedback",
+                "suggestions",
+            ]
+        ).issubset(it)
 
     def test_api_unknown_run_is_404(self, client: TestClient):
         r = client.get("/api/runs/999")

@@ -28,7 +28,9 @@ brief ──► generator ──► HTML ──► renderer ──► screenshot
 - **`orchestrator.py`** — The loop. Stops after `patience` iterations without
   a `tolerance`-point gain, or at `max_iters`.
 - **`storage.py`** — SQLite run/iteration history.
-- **`viewer.py`** — Minimal FastAPI viewer to browse iterations.
+- **`viewer.py`** — FastAPI viewer to browse iterations, plus a scrubber
+  (`/runs/{id}/scrub`) for stepping through the evolution with a before/after
+  compare slider.
 
 ## Setup
 
@@ -53,6 +55,14 @@ The viewer renders a dashboard with a run-start form, a live score chart, and
 per-iteration cards (screenshot, SUS breakdown, feedback, suggestions). If
 you start a run from the browser it streams new iterations in via SSE as
 they complete — you can literally watch the site evolve.
+
+Each run page has a **Scrub ▸** link to a dedicated scrubber: a timeline
+slider with the screenshot on the left and the critic's verdict on the
+right, updating as you drag (arrow keys work too). A **vs prev / vs best**
+toggle overlays two iterations behind a draggable divider so you can see
+exactly what changed, and each iteration surfaces the prior critic's
+suggestions that produced it. Conversation runs scrub through transcripts
+instead of screenshots.
 
 ## Deploy to Fly.io
 
@@ -92,8 +102,10 @@ and `fly deploy` again.
 ## Static showcase
 
 A self-contained explainer page lives in [`docs/index.html`](docs/index.html) —
-single file, no JS framework, all screenshots inlined as base64. Hand-edit the
-file directly; commit; GitHub Pages publishes in a minute at
+single file, no JS framework, all screenshots inlined as base64. Both runs on
+the page are scrubbable (the same slider + compare interaction as the live
+viewer, as inline progressive enhancement — it still reads fine with JS off).
+Hand-edit the file directly; commit; GitHub Pages publishes in a minute at
 `https://<you>.github.io/design-gan/`. On GitHub, enable it under
 **Settings → Pages → Deploy from branch → `main` / `/docs`**.
 
@@ -104,9 +116,9 @@ pip install -e ".[dev]"
 pytest
 ```
 
-~90 tests covering the scorer, storage (schema + migration), the extractor
+~190 tests covering the scorer, storage (schema + migration), the extractor
 helpers, the orchestrator loop (with generator/critic/renderer faked), the
-viewer's HTTP endpoints, and the CLI.
+viewer's HTTP endpoints (including the scrubber route), and the CLI.
 
 ## Design notes
 
