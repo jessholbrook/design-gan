@@ -332,6 +332,12 @@ def run_detail(run_id: int) -> str:
         else ""
     )
 
+    scrub_link = (
+        f'<a class="scrub-link" href="/runs/{run_id}/scrub">Scrub ▸</a>'
+        if iters
+        else ""
+    )
+
     body = f"""<main class="layout">
   {_runs_sidebar(run_id)}
   <section class="content">
@@ -342,6 +348,7 @@ def run_detail(run_id: int) -> str:
             <span class="spinner"></span>
             <span id="progress-text">{html.escape(progress_text)}</span>
           </span>
+          {scrub_link}
         </h1>
         <div class="run-stats">
           <div><span class="muted">best iter</span>
@@ -364,6 +371,43 @@ def run_detail(run_id: int) -> str:
   </section>
 </main>"""
     return _layout(f"design-gan — run {run_id}", body, body_attrs=attrs)
+
+
+@app.get("/runs/{run_id}/scrub", response_class=HTMLResponse)
+def scrub(run_id: int) -> str:
+    """Immersive scrubber: step through iterations, screenshot + critique side
+    by side. The shell is static; scrub.js hydrates it from /api/runs/{id}."""
+    run = _store().get_run(run_id)
+    if not run:
+        raise HTTPException(404, "run not found")
+    kind = run.get("kind") or "design"
+    brief = (run["brief"] or "")[:120]
+    attrs = (
+        f' data-scrub-run-id="{run_id}"'
+        f' data-kind="{html.escape(kind)}"'
+    )
+    body = f"""<main class="scrub">
+  <div class="scrub-head">
+    <div class="scrub-head-left">
+      <a class="scrub-back" href="/runs/{run_id}">← Run #{run_id}</a>
+      <p class="scrub-brief">{html.escape(brief)}</p>
+    </div>
+    <div class="scrub-modes" id="scrub-modes" hidden>
+      <button type="button" data-mode="single" class="active">Single</button>
+      <button type="button" data-mode="prev">vs prev</button>
+      <button type="button" data-mode="best">vs best</button>
+    </div>
+  </div>
+  <div class="scrub-top">
+    <div class="scrub-stage" id="scrub-stage">
+      <div class="scrub-loading muted">Loading run…</div>
+    </div>
+    <aside class="scrub-panel" id="scrub-panel"></aside>
+  </div>
+  <div class="scrub-timeline" id="scrub-timeline"></div>
+  <script src="/static/scrub.js"></script>
+</main>"""
+    return _layout(f"design-gan — run {run_id} · scrub", body, body_attrs=attrs)
 
 
 # ---------- Routes: static ----------

@@ -8,6 +8,15 @@
       "port": 4173
     },
     {
+      "name": "viewer",
+      "runtimeExecutable": ".venv/bin/python",
+      "runtimeArgs": ["-m", "uvicorn", "design_gan.viewer:app", "--host", "127.0.0.1", "--port", "8000"],
+      "port": 8000,
+      "env": {
+        "DESIGN_GAN_RUNS_DIR": "./runs"
+      }
+    },
+    {
       "name": "viewer-gated",
       "runtimeExecutable": ".venv/bin/python",
       "runtimeArgs": ["-m", "uvicorn", "design_gan.viewer:app", "--host", "127.0.0.1", "--port", "8765"],

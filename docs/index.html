@@ -326,6 +326,86 @@
       line-height: 1.6;
     }
 
+    /* ===== Iteration scrubber (progressive enhancement over .iter-stack) ===== */
+    .sgs { position: relative; }
+    .sgs:focus { outline: none; }
+    .sgs:focus-visible { outline: 2px solid var(--accent); outline-offset: 4px; border-radius: 12px; }
+    .sgs-bar { display: flex; justify-content: flex-end; margin: 4px 0 12px; min-height: 1px; }
+    .sgs-modes { display: flex; gap: 6px; }
+    .sgs-modes button {
+      font: inherit; font-size: 12px; font-weight: 600; padding: 6px 12px;
+      border: 1px solid var(--border); background: #fff; color: var(--muted);
+      border-radius: 999px; cursor: pointer;
+    }
+    .sgs-modes button:hover { border-color: var(--accent); color: var(--accent); }
+    .sgs-modes button.active { background: var(--accent); border-color: var(--accent); color: #fff; }
+
+    .iter-stack[data-scrub] { margin-top: 0; }
+    .iter-stack[data-scrub] > .iter { display: none; }
+    .iter-stack[data-scrub] > .iter.is-active { display: block; animation: sgs-fade 0.25s ease-out; }
+    @keyframes sgs-fade { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: none; } }
+
+    .sgs-timeline { display: flex; align-items: center; gap: 14px; margin: 18px 0 4px; }
+    .sgs-step {
+      flex-shrink: 0; width: 36px; height: 36px; border-radius: 50%;
+      border: 1px solid var(--border); background: #fff; color: var(--text);
+      font-size: 18px; line-height: 1; cursor: pointer;
+    }
+    .sgs-step:hover:not(:disabled) { border-color: var(--accent); color: var(--accent); }
+    .sgs-step:disabled { opacity: 0.4; cursor: default; }
+    .sgs-track { position: relative; flex: 1; }
+    .sgs-spark { position: absolute; inset: -22px 0 auto 0; width: 100%; height: 26px; pointer-events: none; }
+    .sgs-spark polyline { fill: none; stroke: var(--muted); stroke-width: 1.5; }
+    .sgs-spark .cur { fill: var(--accent); }
+    .sgs-spark .best { fill: var(--good); }
+    .sgs-track input[type="range"] { width: 100%; margin: 0; accent-color: var(--accent); }
+    .sgs-ticks { display: flex; justify-content: space-between; margin-top: 6px; }
+    .sgs-tick {
+      font: inherit; font-size: 11px; font-variant-numeric: tabular-nums;
+      color: var(--muted); background: none; border: 0; padding: 2px 4px;
+      cursor: pointer; border-radius: 4px;
+    }
+    .sgs-tick:hover { color: var(--accent); }
+    .sgs-tick.active { color: var(--accent); font-weight: 700; }
+    .sgs-tick.best::after { content: " \2605"; color: var(--good); }
+
+    /* Before/after compare inside the design thumb cell. */
+    .sgs-compare {
+      position: relative; border: 1px solid var(--border); border-radius: 8px;
+      overflow: hidden; aspect-ratio: 16 / 9; background: var(--bg);
+    }
+    .sgs-compare img {
+      position: absolute; inset: 0; width: 100%; height: 100%;
+      object-fit: cover; object-position: top left;
+    }
+    .sgs-compare .top { clip-path: inset(0 calc((1 - var(--f, 0.5)) * 100%) 0 0); }
+    .sgs-handle {
+      position: absolute; top: 0; bottom: 0; left: calc(var(--f, 0.5) * 100%);
+      width: 2px; background: #fff; box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.35);
+      transform: translateX(-1px); cursor: ew-resize; touch-action: none;
+    }
+    .sgs-handle::before { content: ""; position: absolute; top: 0; bottom: 0; left: -12px; right: -12px; }
+    .sgs-grip {
+      position: absolute; top: 50%; left: 50%; width: 28px; height: 28px;
+      transform: translate(-50%, -50%); border-radius: 50%; background: #fff;
+      box-shadow: 0 1px 5px rgba(0, 0, 0, 0.4); display: flex;
+      align-items: center; justify-content: center; font-size: 12px;
+      font-weight: 700; color: var(--accent);
+    }
+    .sgs-clabel {
+      position: absolute; top: 8px; font-size: 10px; font-weight: 600;
+      padding: 3px 7px; border-radius: 999px; background: rgba(15, 23, 42, 0.82); color: #fff;
+    }
+    .sgs-clabel.l { left: 8px; }
+    .sgs-clabel.r { right: 8px; }
+    .sgs-asked {
+      margin: 0 0 14px; padding: 10px 12px; background: #fffbeb;
+      border: 1px solid #fde68a; border-radius: 8px; font-size: 13px;
+    }
+    .sgs-asked summary { cursor: pointer; color: #92400e; font-weight: 600; }
+    .sgs-asked ul { margin: 8px 0 0; padding-left: 18px; }
+    .sgs-asked li { margin-bottom: 6px; }
+
     @media (max-width: 720px) {
       .iter-body { grid-template-columns: 1fr; }
       .sus-row { grid-template-columns: repeat(5, 1fr); }
@@ -1114,5 +1194,223 @@ design-gan converse "I keep procrastinating on writing my thesis. How do I actua
       </p>
     </footer>
   </div>
+  <script>
+  // Progressive enhancement: turn each .iter-stack into a scrubber. If this
+  // script fails for any reason the page still shows every iteration stacked.
+  (function () {
+    function mk(tag, cls, txt) {
+      var n = document.createElement(tag);
+      if (cls) n.className = cls;
+      if (txt != null) n.textContent = txt;
+      return n;
+    }
+    document.querySelectorAll('.iter-stack').forEach(function (stack) {
+      var iters = Array.prototype.slice.call(stack.querySelectorAll(':scope > .iter'));
+      if (iters.length < 2) return;
+      var isDesign = !!stack.querySelector('.iter-thumb img');
+
+      var data = iters.map(function (a) {
+        var num = a.querySelector('.iter-num');
+        var badge = a.querySelector('.badge');
+        return {
+          num: (num && num.textContent.trim()) || '#?',
+          score: parseFloat((badge && badge.textContent) || '0') || 0,
+        };
+      });
+      var bestIdx = data.reduce(function (b, d, i) {
+        return d.score > data[b].score ? i : b;
+      }, 0);
+
+      // Causal link: clone the previous iteration's suggestions into this one.
+      iters.forEach(function (a, i) {
+        if (i === 0) return;
+        var prevSugg = iters[i - 1].querySelector('.suggestions');
+        var detail = a.querySelector('.iter-detail');
+        if (!prevSugg || !detail) return;
+        var d = mk('details', 'sgs-asked');
+        d.appendChild(
+          mk(
+            'summary',
+            null,
+            'What ' + data[i - 1].num + '’s critic asked to fix → produced this iteration'
+          )
+        );
+        d.appendChild(prevSugg.cloneNode(true));
+        detail.insertBefore(d, detail.firstChild);
+      });
+
+      var wrap = mk('div', 'sgs');
+      wrap.tabIndex = 0;
+      stack.parentNode.insertBefore(wrap, stack);
+      var bar = mk('div', 'sgs-bar');
+      wrap.appendChild(bar);
+      wrap.appendChild(stack);
+      stack.setAttribute('data-scrub', '');
+
+      var mode = 'single';
+      var split = 0.5;
+      var idx = bestIdx;
+
+      if (isDesign) {
+        var modes = mk('div', 'sgs-modes');
+        ['single|Single', 'prev|vs prev', 'best|vs best'].forEach(function (m) {
+          var parts = m.split('|');
+          var b = mk('button', parts[0] === 'single' ? 'active' : null, parts[1]);
+          b.type = 'button';
+          b.dataset.mode = parts[0];
+          modes.appendChild(b);
+        });
+        bar.appendChild(modes);
+        modes.addEventListener('click', function (e) {
+          var b = e.target.closest('button');
+          if (!b) return;
+          mode = b.dataset.mode;
+          modes.querySelectorAll('button').forEach(function (x) {
+            x.classList.toggle('active', x === b);
+          });
+          render();
+        });
+      }
+
+      var tl = mk('div', 'sgs-timeline');
+      var prev = mk('button', 'sgs-step', '‹');
+      var next = mk('button', 'sgs-step', '›');
+      prev.type = next.type = 'button';
+      var track = mk('div', 'sgs-track');
+      var range = mk('input');
+      range.type = 'range';
+      range.min = 0;
+      range.max = iters.length - 1;
+      range.step = 1;
+      range.setAttribute('aria-label', 'Iteration');
+      var ticks = mk('div', 'sgs-ticks');
+      data.forEach(function (d, i) {
+        var t = mk('button', 'sgs-tick' + (i === bestIdx ? ' best' : ''), d.num);
+        t.type = 'button';
+        t.addEventListener('click', function () { go(i); });
+        ticks.appendChild(t);
+      });
+
+      var NS = 'http://www.w3.org/2000/svg';
+      var svg = document.createElementNS(NS, 'svg');
+      svg.setAttribute('class', 'sgs-spark');
+      svg.setAttribute('viewBox', '0 0 100 26');
+      svg.setAttribute('preserveAspectRatio', 'none');
+      var scores = data.map(function (d) { return d.score; });
+      var lo = Math.min.apply(null, scores.concat([0]));
+      var hi = Math.max.apply(null, scores.concat([1]));
+      var span = hi - lo || 1;
+      var X = function (i) { return iters.length < 2 ? 0 : (i / (iters.length - 1)) * 100; };
+      var Y = function (v) { return 26 - ((v - lo) / span) * 22 - 2; };
+      var pl = document.createElementNS(NS, 'polyline');
+      pl.setAttribute('points', scores.map(function (v, i) { return X(i) + ',' + Y(v); }).join(' '));
+      svg.appendChild(pl);
+      var bestDot = document.createElementNS(NS, 'circle');
+      bestDot.setAttribute('class', 'best');
+      bestDot.setAttribute('r', '2');
+      bestDot.setAttribute('cx', X(bestIdx));
+      bestDot.setAttribute('cy', Y(scores[bestIdx]));
+      svg.appendChild(bestDot);
+      var curDot = document.createElementNS(NS, 'circle');
+      curDot.setAttribute('class', 'cur');
+      curDot.setAttribute('r', '2.5');
+      svg.appendChild(curDot);
+
+      track.appendChild(svg);
+      track.appendChild(range);
+      track.appendChild(ticks);
+      tl.appendChild(prev);
+      tl.appendChild(track);
+      tl.appendChild(next);
+      wrap.appendChild(tl);
+
+      prev.addEventListener('click', function () { go(idx - 1); });
+      next.addEventListener('click', function () { go(idx + 1); });
+      range.addEventListener('input', function () { go(parseInt(range.value, 10)); });
+      wrap.addEventListener('keydown', function (e) {
+        if (e.key === 'ArrowLeft') go(idx - 1);
+        else if (e.key === 'ArrowRight') go(idx + 1);
+        else if (e.key === 'Home') go(0);
+        else if (e.key === 'End') go(iters.length - 1);
+        else return;
+        e.preventDefault();
+      });
+
+      function go(i) {
+        idx = Math.max(0, Math.min(iters.length - 1, i));
+        render();
+      }
+
+      function clearCompare() {
+        stack.querySelectorAll('.sgs-compare').forEach(function (n) { n.remove(); });
+        iters.forEach(function (a) {
+          var t = a.querySelector('.iter-thumb');
+          if (t) t.style.display = '';
+        });
+      }
+
+      function buildCompare(article) {
+        if (!isDesign || mode === 'single') return;
+        var target = mode === 'prev'
+          ? (idx > 0 ? idx - 1 : null)
+          : (idx !== bestIdx ? bestIdx : null);
+        if (target == null) return;
+        var curImg = article.querySelector('.iter-thumb img');
+        var tgtImg = iters[target].querySelector('.iter-thumb img');
+        var thumb = article.querySelector('.iter-thumb');
+        if (!curImg || !tgtImg || !thumb) return;
+        thumb.style.display = 'none';
+        var c = mk('div', 'sgs-compare');
+        c.style.setProperty('--f', split);
+        var base = mk('img');
+        base.src = tgtImg.src;
+        base.alt = '';
+        var top = mk('img', 'top');
+        top.src = curImg.src;
+        top.alt = '';
+        c.appendChild(base);
+        c.appendChild(top);
+        c.appendChild(mk('span', 'sgs-clabel l', data[idx].num + ' now'));
+        c.appendChild(
+          mk('span', 'sgs-clabel r', data[target].num + (mode === 'best' ? ' peak' : ' prev'))
+        );
+        var h = mk('div', 'sgs-handle');
+        h.appendChild(mk('div', 'sgs-grip', '‹ ›'));
+        c.appendChild(h);
+        thumb.parentNode.insertBefore(c, thumb);
+        var move = function (e) {
+          var r = c.getBoundingClientRect();
+          split = Math.max(0, Math.min(1, (e.clientX - r.left) / r.width));
+          c.style.setProperty('--f', split);
+        };
+        var up = function () {
+          window.removeEventListener('pointermove', move);
+          window.removeEventListener('pointerup', up);
+        };
+        h.addEventListener('pointerdown', function (e) {
+          e.preventDefault();
+          window.addEventListener('pointermove', move);
+          window.addEventListener('pointerup', up);
+        });
+      }
+
+      function render() {
+        iters.forEach(function (a, i) { a.classList.toggle('is-active', i === idx); });
+        range.value = idx;
+        ticks.querySelectorAll('.sgs-tick').forEach(function (t, i) {
+          t.classList.toggle('active', i === idx);
+        });
+        prev.disabled = idx === 0;
+        next.disabled = idx === iters.length - 1;
+        curDot.setAttribute('cx', X(idx));
+        curDot.setAttribute('cy', Y(scores[idx]));
+        clearCompare();
+        buildCompare(iters[idx]);
+      }
+
+      render();
+    });
+  })();
+  </script>
 </body>
 </html>

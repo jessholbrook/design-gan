@@ -465,3 +465,333 @@ a:hover { text-decoration: underline; }
 /* Author display:flex on labels beats the built-in display:none for [hidden] —
    restore the hide behavior for the kind-toggled fields. */
 .new-run [hidden] { display: none !important; }
+
+/* ========== Iteration scrubber ========== */
+
+/* Link from the run-detail header into the scrubber. */
+.scrub-link {
+  font-size: 13px;
+  font-weight: 600;
+  padding: 4px 10px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  color: var(--accent);
+}
+.scrub-link:hover { background: #eff6ff; text-decoration: none; }
+
+.scrub {
+  max-width: 1500px;
+  margin: 0 auto;
+  padding: 20px 24px 0;
+  display: flex;
+  flex-direction: column;
+  min-height: calc(100vh - 49px);
+}
+
+.scrub-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+  margin-bottom: 16px;
+}
+.scrub-back { font-size: 13px; font-weight: 600; }
+.scrub-brief {
+  margin: 6px 0 0;
+  font-size: 13px;
+  color: var(--muted);
+  max-width: 70ch;
+}
+
+/* Author display:flex beats the built-in display:none for [hidden] — restore
+   it so the compare controls stay hidden until scrub.js enables them. */
+.scrub [hidden] { display: none !important; }
+.scrub-modes { display: flex; gap: 6px; flex-shrink: 0; }
+.scrub-modes button {
+  font: inherit;
+  font-size: 12px;
+  font-weight: 600;
+  padding: 6px 12px;
+  border: 1px solid var(--border);
+  background: #fff;
+  color: var(--muted);
+  border-radius: 999px;
+  cursor: pointer;
+}
+.scrub-modes button:hover { border-color: var(--accent); color: var(--accent); }
+.scrub-modes button.active {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: #fff;
+}
+
+.scrub-top {
+  display: grid;
+  grid-template-columns: 1fr 380px;
+  gap: 20px;
+  flex: 1;
+  min-height: 0;
+}
+
+.scrub-stage {
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  box-shadow: var(--shadow);
+  overflow: auto;
+  max-height: calc(100vh - 220px);
+  position: relative;
+}
+.scrub-loading {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  height: 100%;
+  min-height: 240px;
+  font-size: 14px;
+}
+.scrub-shot { display: block; line-height: 0; }
+.scrub-shot img { width: 100%; height: auto; display: block; }
+
+/* Before/after compare: two stacked screenshots, the top one clipped to a
+   draggable fraction --f. Both render at the same width so they stay aligned. */
+.scrub-compare { position: relative; line-height: 0; }
+.scrub-compare img { width: 100%; height: auto; display: block; }
+.scrub-compare-base { position: relative; }
+.scrub-compare-top {
+  position: absolute;
+  top: 0;
+  left: 0;
+  clip-path: inset(0 calc((1 - var(--f, 0.5)) * 100%) 0 0);
+}
+.scrub-compare-handle {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: calc(var(--f, 0.5) * 100%);
+  width: 2px;
+  background: #fff;
+  box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.35);
+  transform: translateX(-1px);
+  cursor: ew-resize;
+  touch-action: none;
+}
+.scrub-compare-handle::before {
+  content: "";
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: -10px;
+  right: -10px;
+}
+.scrub-compare-handle span {
+  position: sticky;
+  top: 260px;
+  display: block;
+  width: 30px;
+  height: 30px;
+  margin-left: -15px;
+  border-radius: 50%;
+  background: #fff;
+  box-shadow: 0 1px 5px rgba(0, 0, 0, 0.4);
+}
+.scrub-compare-handle span::after {
+  content: "‹ ›";
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 13px;
+  font-weight: 700;
+  color: var(--accent);
+  line-height: 1;
+}
+.scrub-compare-label {
+  position: absolute;
+  top: 10px;
+  font-size: 11px;
+  font-weight: 600;
+  line-height: 1;
+  padding: 4px 8px;
+  border-radius: 999px;
+  background: rgba(15, 23, 42, 0.82);
+  color: #fff;
+  letter-spacing: 0.02em;
+}
+.scrub-compare-label.left { left: 10px; }
+.scrub-compare-label.right { right: 10px; }
+
+/* Causal link: the prior critic's asks that produced this iteration. */
+.scrub-asked {
+  margin: 0 0 16px;
+  padding: 10px 12px;
+  background: #fffbeb;
+  border: 1px solid #fde68a;
+  border-radius: 8px;
+  font-size: 13px;
+}
+.scrub-asked summary {
+  cursor: pointer;
+  color: #92400e;
+  font-weight: 600;
+}
+.scrub-asked ul { margin: 8px 0 0; padding-left: 18px; }
+.scrub-asked li { margin-bottom: 6px; }
+
+.scrub-transcript {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 20px;
+  line-height: 0;
+}
+
+.scrub-panel {
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  box-shadow: var(--shadow);
+  padding: 20px;
+  overflow: auto;
+  max-height: calc(100vh - 220px);
+}
+.scrub-panel-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 10px;
+}
+.scrub-iter-label {
+  display: block;
+  font-size: 11px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+.scrub-iter-num { font-size: 22px; font-weight: 700; font-variant-numeric: tabular-nums; }
+.scrub-delta-row { margin-bottom: 16px; }
+.scrub-delta {
+  display: inline-block;
+  font-size: 12px;
+  font-weight: 600;
+  padding: 3px 10px;
+  border-radius: 999px;
+  font-variant-numeric: tabular-nums;
+}
+.scrub-delta.up { background: #d1fae5; color: #065f46; }
+.scrub-delta.down { background: #fee2e2; color: #991b1b; }
+.scrub-delta.flat { background: #e5e7eb; color: #374151; }
+.scrub-delta.muted { background: #e5e7eb; }
+
+.scrub-stats { display: flex; gap: 24px; margin-bottom: 18px; }
+.scrub-stats > div { display: flex; flex-direction: column; }
+.scrub-stats .muted { font-size: 11px; text-transform: uppercase; letter-spacing: 0.04em; }
+.scrub-stats b { font-size: 18px; font-variant-numeric: tabular-nums; }
+
+.scrub-panel h3 {
+  font-size: 12px;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--muted);
+  margin: 18px 0 8px;
+  font-weight: 600;
+}
+.scrub-panel h3:first-of-type { margin-top: 0; }
+.scrub-feedback { margin: 0; font-size: 14px; line-height: 1.6; }
+.scrub-suggestions { margin: 0; padding-left: 18px; font-size: 13px; }
+.scrub-suggestions li { margin-bottom: 6px; }
+
+.scrub-sus {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  grid-template-columns: repeat(10, 1fr);
+  gap: 5px;
+}
+.scrub-sus li { display: flex; flex-direction: column; align-items: center; gap: 4px; }
+.scrub-sus-bar {
+  width: 100%;
+  height: 40px;
+  background: #f1efe9;
+  border-radius: 4px;
+  display: flex;
+  align-items: flex-end;
+  overflow: hidden;
+}
+.scrub-sus-fill { width: 100%; background: var(--accent); border-radius: 4px; min-height: 2px; }
+.scrub-sus-num { font-size: 10px; color: var(--muted); font-variant-numeric: tabular-nums; }
+
+.scrub-critic { border-top: 1px solid var(--border); padding: 8px 0; font-size: 13px; }
+.scrub-critic summary { cursor: pointer; color: var(--muted); font-weight: 600; }
+.scrub-critic p { margin: 8px 0; }
+.scrub-critic ul { margin: 0; padding-left: 18px; }
+
+/* Timeline pinned to the bottom of the viewport. */
+.scrub-timeline {
+  position: sticky;
+  bottom: 0;
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  padding: 14px 0 18px;
+  margin-top: 16px;
+  background: linear-gradient(to top, var(--bg) 70%, transparent);
+}
+.scrub-step {
+  flex-shrink: 0;
+  width: 36px;
+  height: 36px;
+  border-radius: 50%;
+  border: 1px solid var(--border);
+  background: #fff;
+  color: var(--text);
+  font-size: 18px;
+  line-height: 1;
+  cursor: pointer;
+}
+.scrub-step:hover:not(:disabled) { border-color: var(--accent); color: var(--accent); }
+.scrub-step:disabled { opacity: 0.4; cursor: default; }
+
+.scrub-track { position: relative; flex: 1; }
+.scrub-spark {
+  position: absolute;
+  inset: -22px 0 auto 0;
+  width: 100%;
+  height: 26px;
+  pointer-events: none;
+}
+.scrub-spark polyline { fill: none; stroke: var(--muted); stroke-width: 1.5; }
+.scrub-spark .cur { fill: var(--accent); }
+.scrub-spark .best { fill: var(--good); }
+.scrub-track input[type="range"] {
+  width: 100%;
+  margin: 0;
+  accent-color: var(--accent);
+}
+.scrub-ticks {
+  display: flex;
+  justify-content: space-between;
+  margin-top: 6px;
+}
+.scrub-tick {
+  font: inherit;
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+  color: var(--muted);
+  background: none;
+  border: 0;
+  padding: 2px 4px;
+  cursor: pointer;
+  border-radius: 4px;
+}
+.scrub-tick:hover { color: var(--accent); }
+.scrub-tick.active { color: var(--accent); font-weight: 700; }
+.scrub-tick.best::after { content: " ★"; color: var(--good); }
+
+@media (max-width: 900px) {
+  .scrub-top { grid-template-columns: 1fr; }
+  .scrub-stage, .scrub-panel { max-height: none; }
+}
