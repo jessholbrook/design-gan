@@ -6,6 +6,8 @@ scores it on the System Usability Scale (SUS) alongside objective
 accessibility signals (axe-core); the orchestrator feeds feedback back into
 the generator and repeats until the composite score plateaus.
 
+![Scrubbing through a run — iteration #3 on the left, critic verdict on the right.](docs/images/scrubber-single.png)
+
 ## Architecture
 
 ```
@@ -56,6 +58,8 @@ per-iteration cards (screenshot, SUS breakdown, feedback, suggestions). If
 you start a run from the browser it streams new iterations in via SSE as
 they complete — you can literally watch the site evolve.
 
+![Run page — score over iterations and per-iteration cards.](docs/images/run-page.png)
+
 Each run page has a **Scrub ▸** link to a dedicated scrubber: a timeline
 slider with the screenshot on the left and the critic's verdict on the
 right, updating as you drag (arrow keys work too). A **vs prev / vs best**
@@ -63,6 +67,8 @@ toggle overlays two iterations behind a draggable divider so you can see
 exactly what changed, and each iteration surfaces the prior critic's
 suggestions that produced it. Conversation runs scrub through transcripts
 instead of screenshots.
+
+![Scrubber compare mode — iteration #1 vs the peak iteration behind a draggable divider.](docs/images/scrubber-compare.png)
 
 ## Deploy to Fly.io
 
