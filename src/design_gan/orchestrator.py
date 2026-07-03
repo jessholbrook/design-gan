@@ -1,11 +1,25 @@
-"""Main loop: generate -> render -> critique -> score; stop when score plateaus."""
+"""Main loop: generate -> render -> critique -> score; stop when score plateaus.
+
+Design runs and conversation runs share one loop skeleton (`_run_shared_loop`)
+and differ only in their per-iteration body:
+
+- design:       generator.generate -> renderer.render -> critic.critique(*)
+- conversation: conversation_generator.generate -> transcript_renderer.run_conversation
+                -> critic.cus_critique(*)
+
+The search is a greedy hill-climb: each iteration evolves from the best-scoring
+iteration so far, not the latest one. When an iteration regresses, the next
+generation is re-seeded from the best artifact and its critique, so the loop
+never spends its remaining patience exploring from a bad ancestor.
+"""
 
 from __future__ import annotations
 
 import asyncio
 import traceback
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Any, Awaitable, Callable
 
 from rich.console import Console
 
@@ -62,22 +76,207 @@ class LoopResult:
     status: str  # "converged" | "exhausted" | "errored" | "budget_exhausted"
 
 
-async def run_loop(
-    cfg: LoopConfig, console: Console | None = None, run_id: int | None = None
+@dataclass
+class _IterState:
+    """The artifacts fed forward into the next generation call."""
+
+    artifact: str | None = None  # design: site HTML; conversation: system prompt
+    feedback: str | None = None
+    suggestions: list[str] | None = field(default=None)
+
+
+@dataclass
+class _IterOutcome:
+    """What one completed iteration hands back to the shared loop."""
+
+    artifact: str
+    score: scorer.Score
+    sus: critic.SUSResponse
+    critic_breakdown: list[dict[str, Any]] | None
+    cost_usd: float
+    console_extra: str = ""  # appended to the score line, e.g. turns/satisfied
+
+
+_IterateFn = Callable[
+    [LoopConfig, int, "_IterState", Path, "storage.Storage", int, Console],
+    Awaitable[_IterOutcome],
+]
+
+
+async def _design_iterate(
+    cfg: LoopConfig,
+    run_id: int,
+    prev: _IterState,
+    run_dir: Path,
+    store: storage.Storage,
+    i: int,
+    console: Console,
+) -> _IterOutcome:
+    # --- generate -----------------------------------------------------------
+    store.update_progress(run_id, i, PHASE_GENERATING)
+    console.print("[dim]generating...[/dim]")
+    html, gen_cost = await generator.generate(
+        cfg.model,
+        generator.GenerationRequest(
+            brief=cfg.brief,
+            prior_html=prev.artifact,
+            critic_feedback=prev.feedback,
+            suggestions=prev.suggestions,
+        ),
+    )
+    cost = gen_cost
+
+    iter_dir = run_dir / f"iter_{i:03d}"
+    iter_dir.mkdir(parents=True, exist_ok=True)
+    (iter_dir / "site.html").write_text(html, encoding="utf-8")
+
+    # --- render ---------------------------------------------------------------
+    store.update_progress(run_id, i, PHASE_RENDERING)
+    console.print("[dim]rendering...[/dim]")
+    render = await renderer.render(html, viewport=cfg.viewport)
+    artifacts = renderer.write_artifacts(render, iter_dir)
+
+    # --- critique ---------------------------------------------------------------
+    store.update_progress(run_id, i, PHASE_CRITIQUING)
+    critic_breakdown: list[dict[str, Any]] | None = None
+    if cfg.critics:
+        console.print(f"[dim]critiquing (ensemble of {len(cfg.critics)})...[/dim]")
+        sus, critic_breakdown, crit_cost = await critic.critique_ensemble(
+            cfg.model,
+            cfg.critics,
+            screenshot_path=artifacts["screenshot"].resolve(),
+            dom_html=render.dom_html,
+            axe_violations=render.axe_violations,
+            brief=cfg.brief,
+        )
+    else:
+        console.print("[dim]critiquing...[/dim]")
+        sus, crit_cost = await critic.critique(
+            cfg.model,
+            screenshot_path=artifacts["screenshot"].resolve(),
+            dom_html=render.dom_html,
+            axe_violations=render.axe_violations,
+            brief=cfg.brief,
+        )
+    cost += crit_cost
+
+    result = scorer.score(list(sus.sus), render.axe_violations)
+    return _IterOutcome(
+        artifact=html,
+        score=result,
+        sus=sus,
+        critic_breakdown=critic_breakdown,
+        cost_usd=cost,
+    )
+
+
+async def _conversation_iterate(
+    cfg: LoopConfig,
+    run_id: int,
+    prev: _IterState,
+    run_dir: Path,
+    store: storage.Storage,
+    i: int,
+    console: Console,
+) -> _IterOutcome:
+    # --- generate assistant system prompt ------------------------------------
+    store.update_progress(run_id, i, PHASE_GENERATING)
+    console.print("[dim]generating system prompt...[/dim]")
+    prompt, gen_cost = await conversation_generator.generate(
+        cfg.model,
+        conversation_generator.ConversationGenerationRequest(
+            goal=cfg.brief,
+            max_turns=cfg.max_conversation_turns,
+            prior_system_prompt=prev.artifact,
+            critic_feedback=prev.feedback,
+            suggestions=prev.suggestions,
+        ),
+    )
+    cost = gen_cost
+
+    iter_dir = run_dir / f"iter_{i:03d}"
+    iter_dir.mkdir(parents=True, exist_ok=True)
+
+    # --- run conversation -----------------------------------------------------
+    store.update_progress(run_id, i, PHASE_CONVERSING)
+    console.print("[dim]conversing...[/dim]")
+    trans = await transcript_renderer.run_conversation(
+        model=cfg.model,
+        assistant_system_prompt=prompt,
+        goal=cfg.brief,
+        max_turns=cfg.max_conversation_turns,
+    )
+    cost += trans.total_cost_usd
+    transcript_renderer.write_transcript_artifacts(trans, iter_dir)
+
+    # --- critique ---------------------------------------------------------------
+    store.update_progress(run_id, i, PHASE_CRITIQUING)
+    critic_breakdown: list[dict[str, Any]] | None = None
+    if cfg.critics:
+        console.print(f"[dim]CUS critique (ensemble of {len(cfg.critics)})...[/dim]")
+        sus, critic_breakdown, crit_cost = await critic.cus_critique_ensemble(
+            cfg.model,
+            cfg.critics,
+            goal=cfg.brief,
+            transcript=trans.transcript,
+            objective_metrics=trans.objective_metrics,
+            assistant_system_prompt=prompt,
+        )
+    else:
+        console.print("[dim]CUS critique...[/dim]")
+        sus, crit_cost = await critic.cus_critique(
+            cfg.model,
+            goal=cfg.brief,
+            transcript=trans.transcript,
+            objective_metrics=trans.objective_metrics,
+            assistant_system_prompt=prompt,
+        )
+    cost += crit_cost
+
+    result = scorer.score_from_penalty(
+        list(sus.sus),
+        trans.objective_penalty,
+        breakdown={
+            "kind": "conversation",
+            "objective_metrics": trans.objective_metrics,
+            "turns_taken": trans.turns_taken,
+            "satisfied": trans.satisfied,
+        },
+    )
+    return _IterOutcome(
+        artifact=prompt,  # persisted in the html column (the evolving artifact)
+        score=result,
+        sus=sus,
+        critic_breakdown=critic_breakdown,
+        cost_usd=cost,
+        console_extra=f"  turns={trans.turns_taken}  satisfied={trans.satisfied}",
+    )
+
+
+async def _run_shared_loop(
+    cfg: LoopConfig,
+    console: Console | None,
+    run_id: int | None,
+    *,
+    kind: str,
+    rule_prefix: str,
+    score_label: str,
+    penalty_label: str,
+    feedback_limit: int | None,
+    iterate: _IterateFn,
 ) -> LoopResult:
     console = console or Console()
     store = storage.Storage(cfg.db_path)
     if run_id is None:
-        run_id = store.create_run(cfg.brief, cfg.model)
+        run_id = store.create_run(cfg.brief, cfg.model, kind=kind)
     run_dir = cfg.runs_dir / f"run_{run_id:04d}"
     run_dir.mkdir(parents=True, exist_ok=True)
 
     best_score: float | None = None
     best_iter = 0
     stale = 0
-    prev_html: str | None = None
-    prev_feedback: str | None = None
-    prev_suggestions: list[str] | None = None
+    prev = _IterState()
+    best = _IterState()  # artifacts + critique of the best-scoring iteration
 
     status = "exhausted"
     final_error: str | None = None
@@ -99,75 +298,24 @@ async def run_loop(
                     console.print(f"[red]{final_error}[/red]")
                     break
 
-            console.rule(f"[bold cyan]Run {run_id} iter {i}/{cfg.max_iters}")
+            console.rule(f"[bold cyan]{rule_prefix} {run_id} iter {i}/{cfg.max_iters}")
 
-            iter_cost_usd = 0.0
             try:
-                # --- generate -----------------------------------------------
-                store.update_progress(run_id, i, PHASE_GENERATING)
-                console.print("[dim]generating...[/dim]")
-                html, gen_cost = await generator.generate(
-                    cfg.model,
-                    generator.GenerationRequest(
-                        brief=cfg.brief,
-                        prior_html=prev_html,
-                        critic_feedback=prev_feedback,
-                        suggestions=prev_suggestions,
-                    ),
-                )
-                iter_cost_usd += gen_cost
-
-                iter_dir = run_dir / f"iter_{i:03d}"
-                iter_dir.mkdir(parents=True, exist_ok=True)
-                (iter_dir / "site.html").write_text(html, encoding="utf-8")
-
-                # --- render -------------------------------------------------
-                store.update_progress(run_id, i, PHASE_RENDERING)
-                console.print("[dim]rendering...[/dim]")
-                render = await renderer.render(html, viewport=cfg.viewport)
-                artifacts = renderer.write_artifacts(render, iter_dir)
-
-                # --- critique ----------------------------------------------
-                store.update_progress(run_id, i, PHASE_CRITIQUING)
-                critic_breakdown: list[dict] | None = None
-                if cfg.critics:
-                    console.print(
-                        f"[dim]critiquing (ensemble of {len(cfg.critics)})...[/dim]"
-                    )
-                    sus, critic_breakdown, crit_cost = await critic.critique_ensemble(
-                        cfg.model,
-                        cfg.critics,
-                        screenshot_path=artifacts["screenshot"].resolve(),
-                        dom_html=render.dom_html,
-                        axe_violations=render.axe_violations,
-                        brief=cfg.brief,
-                    )
-                else:
-                    console.print("[dim]critiquing...[/dim]")
-                    sus, crit_cost = await critic.critique(
-                        cfg.model,
-                        screenshot_path=artifacts["screenshot"].resolve(),
-                        dom_html=render.dom_html,
-                        axe_violations=render.axe_violations,
-                        brief=cfg.brief,
-                    )
-                iter_cost_usd += crit_cost
-
-                result = scorer.score(list(sus.sus), render.axe_violations)
+                out = await iterate(cfg, run_id, prev, run_dir, store, i, console)
                 store.save_iteration(
                     storage.IterationRecord(
                         run_id=run_id,
                         iter=i,
-                        html=html,
-                        sus_score=result.sus,
-                        axe_penalty=result.axe_penalty,
-                        composite_score=result.composite,
-                        sus_answers=list(sus.sus),
-                        feedback=sus.feedback,
-                        suggestions=sus.suggestions,
-                        artifacts_dir=str(iter_dir),
-                        cost_usd=iter_cost_usd,
-                        critic_breakdown=critic_breakdown,
+                        html=out.artifact,
+                        sus_score=out.score.sus,
+                        axe_penalty=out.score.axe_penalty,
+                        composite_score=out.score.composite,
+                        sus_answers=list(out.sus.sus),
+                        feedback=out.sus.feedback,
+                        suggestions=out.sus.suggestions,
+                        artifacts_dir=str(run_dir / f"iter_{i:03d}"),
+                        cost_usd=out.cost_usd,
+                        critic_breakdown=out.critic_breakdown,
                     )
                 )
             except Exception as e:
@@ -183,19 +331,33 @@ async def run_loop(
                 continue
 
             console.print(
-                f"[bold]score[/bold]: SUS={result.sus:.1f}  "
-                f"a11y_penalty={result.axe_penalty:.1f}  "
-                f"[green]composite={result.composite:.1f}[/green]  "
-                f"[dim]cost=${iter_cost_usd:.3f}[/dim]"
+                f"[bold]score[/bold]: {score_label}={out.score.sus:.1f}  "
+                f"{penalty_label}={out.score.axe_penalty:.1f}  "
+                f"[green]composite={out.score.composite:.1f}[/green]  "
+                f"[dim]cost=${out.cost_usd:.3f}{out.console_extra}[/dim]"
             )
-            console.print(f"[dim]feedback:[/dim] {sus.feedback}")
+            feedback_txt = (
+                out.sus.feedback[:feedback_limit] if feedback_limit else out.sus.feedback
+            )
+            console.print(f"[dim]feedback:[/dim] {feedback_txt}")
 
-            if best_score is None or result.composite > best_score + cfg.tolerance:
-                best_score = result.composite
+            current = _IterState(
+                artifact=out.artifact,
+                feedback=out.sus.feedback,
+                suggestions=out.sus.suggestions,
+            )
+            if best_score is None or out.score.composite > best_score + cfg.tolerance:
+                best_score = out.score.composite
                 best_iter = i
                 stale = 0
+                best = current
+                prev = current
             else:
                 stale += 1
+                # Regression or plateau: re-seed the next generation from the
+                # best iteration so the search never drifts downhill from a
+                # bad ancestor.
+                prev = best
 
             if stale >= cfg.patience:
                 status = "converged"
@@ -203,10 +365,6 @@ async def run_loop(
                     f"[yellow]No improvement over {cfg.patience} iters — stopping.[/yellow]"
                 )
                 break
-
-            prev_html = html
-            prev_feedback = sus.feedback
-            prev_suggestions = sus.suggestions
     except Exception as e:
         # Truly unexpected failure — still mark the run so it doesn't hang.
         status = "errored"
@@ -228,6 +386,22 @@ async def run_loop(
     )
 
 
+async def run_loop(
+    cfg: LoopConfig, console: Console | None = None, run_id: int | None = None
+) -> LoopResult:
+    return await _run_shared_loop(
+        cfg,
+        console,
+        run_id,
+        kind=KIND_DESIGN,
+        rule_prefix="Run",
+        score_label="SUS",
+        penalty_label="a11y_penalty",
+        feedback_limit=None,
+        iterate=_design_iterate,
+    )
+
+
 def run_loop_sync(
     cfg: LoopConfig, console: Console | None = None, run_id: int | None = None
 ) -> LoopResult:
@@ -239,185 +413,21 @@ async def run_conversation_loop(
 ) -> LoopResult:
     """Autoresearch loop over conversations instead of pixels.
 
-    Structurally parallel to run_loop but swaps:
-    - generator.generate -> conversation_generator.generate (evolves a system prompt)
-    - renderer.render    -> transcript_renderer.run_conversation
-    - critic.critique(*)  -> critic.cus_critique(*)  (CUS items, transcript input)
-    - scorer.score(answers, violations) -> scorer.score_from_penalty(answers, penalty)
+    Same skeleton as run_loop with the conversation iteration body:
+    - conversation_generator.generate evolves a system prompt
+    - transcript_renderer.run_conversation "renders" it as a dialogue
+    - critic.cus_critique(*) scores the transcript on the CUS
     """
-    console = console or Console()
-    store = storage.Storage(cfg.db_path)
-    if run_id is None:
-        run_id = store.create_run(cfg.brief, cfg.model, kind=KIND_CONVERSATION)
-    run_dir = cfg.runs_dir / f"run_{run_id:04d}"
-    run_dir.mkdir(parents=True, exist_ok=True)
-
-    best_score: float | None = None
-    best_iter = 0
-    stale = 0
-    prev_prompt: str | None = None
-    prev_feedback: str | None = None
-    prev_suggestions: list[str] | None = None
-
-    status = "exhausted"
-    final_error: str | None = None
-    i = 0
-
-    try:
-        for i in range(1, cfg.max_iters + 1):
-            if cfg.daily_budget_usd is not None:
-                used = store.cost_usd_last_24h()
-                if used >= cfg.daily_budget_usd:
-                    status = "budget_exhausted"
-                    final_error = (
-                        f"daily budget exhausted before iter {i}: "
-                        f"${used:.2f} used of ${cfg.daily_budget_usd:.2f}"
-                    )
-                    console.print(f"[red]{final_error}[/red]")
-                    break
-
-            console.rule(
-                f"[bold cyan]Conversation run {run_id} iter {i}/{cfg.max_iters}"
-            )
-
-            iter_cost_usd = 0.0
-            try:
-                # --- generate assistant system prompt -----------------------
-                store.update_progress(run_id, i, PHASE_GENERATING)
-                console.print("[dim]generating system prompt...[/dim]")
-                prompt, gen_cost = await conversation_generator.generate(
-                    cfg.model,
-                    conversation_generator.ConversationGenerationRequest(
-                        goal=cfg.brief,
-                        max_turns=cfg.max_conversation_turns,
-                        prior_system_prompt=prev_prompt,
-                        critic_feedback=prev_feedback,
-                        suggestions=prev_suggestions,
-                    ),
-                )
-                iter_cost_usd += gen_cost
-
-                iter_dir = run_dir / f"iter_{i:03d}"
-                iter_dir.mkdir(parents=True, exist_ok=True)
-
-                # --- run conversation ---------------------------------------
-                store.update_progress(run_id, i, PHASE_CONVERSING)
-                console.print("[dim]conversing...[/dim]")
-                trans = await transcript_renderer.run_conversation(
-                    model=cfg.model,
-                    assistant_system_prompt=prompt,
-                    goal=cfg.brief,
-                    max_turns=cfg.max_conversation_turns,
-                )
-                iter_cost_usd += trans.total_cost_usd
-                artifacts = transcript_renderer.write_transcript_artifacts(
-                    trans, iter_dir
-                )
-
-                # --- critique -----------------------------------------------
-                store.update_progress(run_id, i, PHASE_CRITIQUING)
-                critic_breakdown: list[dict] | None = None
-                if cfg.critics:
-                    console.print(
-                        f"[dim]CUS critique (ensemble of {len(cfg.critics)})...[/dim]"
-                    )
-                    sus, critic_breakdown, crit_cost = await critic.cus_critique_ensemble(
-                        cfg.model,
-                        cfg.critics,
-                        goal=cfg.brief,
-                        transcript=trans.transcript,
-                        objective_metrics=trans.objective_metrics,
-                        assistant_system_prompt=prompt,
-                    )
-                else:
-                    console.print("[dim]CUS critique...[/dim]")
-                    sus, crit_cost = await critic.cus_critique(
-                        cfg.model,
-                        goal=cfg.brief,
-                        transcript=trans.transcript,
-                        objective_metrics=trans.objective_metrics,
-                        assistant_system_prompt=prompt,
-                    )
-                iter_cost_usd += crit_cost
-
-                result = scorer.score_from_penalty(
-                    list(sus.sus),
-                    trans.objective_penalty,
-                    breakdown={
-                        "kind": "conversation",
-                        "objective_metrics": trans.objective_metrics,
-                        "turns_taken": trans.turns_taken,
-                        "satisfied": trans.satisfied,
-                    },
-                )
-                # Persist: html column stores the assistant's system prompt.
-                store.save_iteration(
-                    storage.IterationRecord(
-                        run_id=run_id,
-                        iter=i,
-                        html=prompt,
-                        sus_score=result.sus,
-                        axe_penalty=result.axe_penalty,
-                        composite_score=result.composite,
-                        sus_answers=list(sus.sus),
-                        feedback=sus.feedback,
-                        suggestions=sus.suggestions,
-                        artifacts_dir=str(iter_dir),
-                        cost_usd=iter_cost_usd,
-                        critic_breakdown=critic_breakdown,
-                    )
-                )
-            except Exception as e:
-                console.print(f"[red]iter {i} failed: {e}[/red]")
-                console.print(traceback.format_exc())
-                stale += 1
-                if stale >= cfg.patience:
-                    status = "errored"
-                    final_error = f"iter {i}: {e}"
-                    break
-                continue
-
-            console.print(
-                f"[bold]score[/bold]: CUS={result.sus:.1f}  "
-                f"objective_penalty={result.axe_penalty:.1f}  "
-                f"[green]composite={result.composite:.1f}[/green]  "
-                f"[dim]cost=${iter_cost_usd:.3f}  "
-                f"turns={trans.turns_taken}  satisfied={trans.satisfied}[/dim]"
-            )
-            console.print(f"[dim]feedback:[/dim] {sus.feedback[:200]}")
-
-            if best_score is None or result.composite > best_score + cfg.tolerance:
-                best_score = result.composite
-                best_iter = i
-                stale = 0
-            else:
-                stale += 1
-
-            if stale >= cfg.patience:
-                status = "converged"
-                console.print(
-                    f"[yellow]No improvement over {cfg.patience} iters — stopping.[/yellow]"
-                )
-                break
-
-            prev_prompt = prompt
-            prev_feedback = sus.feedback
-            prev_suggestions = sus.suggestions
-    except Exception as e:
-        status = "errored"
-        final_error = str(e)
-        console.print(f"[red]run errored: {e}[/red]")
-        console.print(traceback.format_exc())
-    finally:
-        final_best_iter = best_iter if best_iter > 0 else None
-        store.finish_run(run_id, final_best_iter, best_score, status, error=final_error)
-
-    return LoopResult(
-        run_id=run_id,
-        best_iter=best_iter,
-        best_score=best_score,
-        iterations=i,
-        status=status,
+    return await _run_shared_loop(
+        cfg,
+        console,
+        run_id,
+        kind=KIND_CONVERSATION,
+        rule_prefix="Conversation run",
+        score_label="CUS",
+        penalty_label="objective_penalty",
+        feedback_limit=200,
+        iterate=_conversation_iterate,
     )
 
 

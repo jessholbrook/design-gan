@@ -24,6 +24,14 @@ def _default_model() -> str:
     return os.environ.get("DESIGN_GAN_MODEL", "claude-sonnet-4-6")
 
 
+def _load_env() -> None:
+    load_dotenv(override=True)
+    # The Agent SDK routes through Claude Code OAuth (Max plan) when no API key
+    # is set. An empty string still counts as "set" for some clients, so clear it.
+    if not os.environ.get("ANTHROPIC_API_KEY"):
+        os.environ.pop("ANTHROPIC_API_KEY", None)
+
+
 @app.command()
 def run(
     brief: str = typer.Argument(..., help="Describe the site the generator should build."),
@@ -34,11 +42,7 @@ def run(
     runs_dir: Path = typer.Option(None, help="Where to store per-iteration artifacts."),
 ) -> None:
     """Run one evolution loop for BRIEF until the score plateaus."""
-    load_dotenv(override=True)
-    # The Agent SDK routes through Claude Code OAuth (Max plan) when no API key
-    # is set. An empty string still counts as "set" for some clients, so clear it.
-    if not os.environ.get("ANTHROPIC_API_KEY"):
-        os.environ.pop("ANTHROPIC_API_KEY", None)
+    _load_env()
     runs_dir = runs_dir or _default_runs_dir()
     cfg = orchestrator.LoopConfig(
         brief=brief,
@@ -65,11 +69,7 @@ def list_runs(
     runs_dir: Path = typer.Option(None, help="Runs directory containing the sqlite db."),
 ) -> None:
     """List prior runs stored in the sqlite db."""
-    load_dotenv(override=True)
-    # The Agent SDK routes through Claude Code OAuth (Max plan) when no API key
-    # is set. An empty string still counts as "set" for some clients, so clear it.
-    if not os.environ.get("ANTHROPIC_API_KEY"):
-        os.environ.pop("ANTHROPIC_API_KEY", None)
+    _load_env()
     runs_dir = runs_dir or _default_runs_dir()
     store = storage.Storage(runs_dir / "design-gan.sqlite")
     rows = store.list_runs()
@@ -102,9 +102,7 @@ def converse(
     runs_dir: Path = typer.Option(None, help="Where to store per-iteration artifacts."),
 ) -> None:
     """Evolve an assistant's system prompt over a short conversation toward GOAL."""
-    load_dotenv(override=True)
-    if not os.environ.get("ANTHROPIC_API_KEY"):
-        os.environ.pop("ANTHROPIC_API_KEY", None)
+    _load_env()
     runs_dir = runs_dir or _default_runs_dir()
     cfg = orchestrator.LoopConfig(
         brief=goal,
@@ -124,6 +122,44 @@ def converse(
         f"run_id={result.run_id}  best_iter={best_iter_txt}  "
         f"best_score={best_score_txt}  iters={result.iterations}  "
         f"status={result.status}"
+    )
+
+
+@app.command()
+def export(
+    run_id: int = typer.Argument(..., help="Run whose best iteration to export."),
+    out: Path = typer.Option(
+        None,
+        help="Output path. Defaults to run_<id>_best.html (design) or .txt (conversation).",
+    ),
+    runs_dir: Path = typer.Option(None, help="Runs directory containing the sqlite db."),
+) -> None:
+    """Write the best iteration's artifact (site HTML or system prompt) to a file."""
+    _load_env()
+    runs_dir = runs_dir or _default_runs_dir()
+    store = storage.Storage(runs_dir / "design-gan.sqlite")
+    run = store.get_run(run_id)
+    if not run:
+        console.print(f"[red]Run {run_id} not found.[/red]")
+        raise typer.Exit(1)
+    iters = store.iterations_for_run(run_id)
+    if not iters:
+        console.print(f"[red]Run {run_id} has no completed iterations.[/red]")
+        raise typer.Exit(1)
+
+    best_iter = run.get("best_iter")
+    rec = next((x for x in iters if x["iter"] == best_iter), None)
+    if rec is None:
+        # No recorded best (e.g. still running) — fall back to the top composite.
+        rec = max(iters, key=lambda x: x["composite_score"])
+
+    kind = run.get("kind") or "design"
+    suffix = ".html" if kind == "design" else ".txt"
+    out = out or Path(f"run_{run_id:04d}_best{suffix}")
+    out.write_text(rec["html"], encoding="utf-8")
+    console.print(
+        f"[green]Exported[/green] run {run_id} iter {rec['iter']} "
+        f"(composite {rec['composite_score']:.1f}) -> {out}"
     )
 
 
@@ -148,11 +184,7 @@ def viewer(
     """Launch the FastAPI viewer to browse iterations."""
     import uvicorn
 
-    load_dotenv(override=True)
-    # The Agent SDK routes through Claude Code OAuth (Max plan) when no API key
-    # is set. An empty string still counts as "set" for some clients, so clear it.
-    if not os.environ.get("ANTHROPIC_API_KEY"):
-        os.environ.pop("ANTHROPIC_API_KEY", None)
+    _load_env()
     runs_dir = runs_dir or _default_runs_dir()
     os.environ["DESIGN_GAN_RUNS_DIR"] = str(runs_dir)
     uvicorn.run("design_gan.viewer:app", host=host, port=port, reload=False)

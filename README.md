@@ -21,10 +21,11 @@ brief ──► generator ──► HTML ──► renderer ──► screenshot
 ```
 
 - **`generator.py`** — Claude writes a standalone HTML/CSS/JS document.
-- **`renderer.py`** — Playwright headless Chromium: screenshot, DOM, axe-core.
+- **`renderer.py`** — Playwright headless Chromium: screenshot, DOM, axe-core
+  (vendored into the package, so renders are deterministic and offline-safe).
 - **`critic.py`** — Claude scores the screenshot on the 10-item SUS (Likert 1-5)
-  and returns prioritized suggestions. Uses `messages.parse()` with a Pydantic
-  schema so the response is always valid.
+  and returns prioritized suggestions. The response contract is a fenced JSON
+  block validated against a Pydantic schema, with one retry on malformed output.
 - **`scorer.py`** — Standard SUS scoring (0-100), blended with weighted axe
   violations into a composite score.
 - **`orchestrator.py`** — The loop. Stops after `patience` iterations without
@@ -51,6 +52,9 @@ design-gan viewer  # http://127.0.0.1:8000
 # Or run one evolution loop from the terminal
 design-gan run "A landing page for a weekend cycling tour in rural Vermont."
 design-gan list-runs
+
+# Write the best iteration's HTML (or system prompt, for conversation runs) to a file
+design-gan export 3 --out best.html
 ```
 
 The viewer renders a dashboard with a run-start form, a live score chart, and
@@ -122,7 +126,7 @@ pip install -e ".[dev]"
 pytest
 ```
 
-~190 tests covering the scorer, storage (schema + migration), the extractor
+~195 tests covering the scorer, storage (schema + migration), the extractor
 helpers, the orchestrator loop (with generator/critic/renderer faked), the
 viewer's HTTP endpoints (including the scrubber route), and the CLI.
 
@@ -135,6 +139,10 @@ viewer's HTTP endpoints (including the scrubber route), and the CLI.
 - **Convergence.** "No further improvements" is operationalized as
   `patience` iterations without a composite gain of at least `tolerance`
   points.
-- **Caching.** The generator and critic both cache their system prompts with
-  `cache_control: ephemeral`, so repeated iterations pay near-zero for the
-  static instructions.
+- **Greedy hill-climb.** Each iteration evolves from the best-scoring
+  iteration so far. When an iteration regresses, the next generation is
+  re-seeded from the best artifact and its critique rather than drifting
+  downhill from the regression.
+- **Caching.** Generator and critic system prompts are static across
+  iterations, so the Agent SDK's prompt caching keeps the repeated cost of
+  those instructions near zero.

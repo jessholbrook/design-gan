@@ -124,9 +124,6 @@ class TestConvergence:
         self, cfg: orchestrator.LoopConfig, monkeypatch: pytest.MonkeyPatch
     ):
         # Monotonically rising scores so patience never triggers.
-        improving = [[n, 5 - n % 5, n, 5 - n % 5, n, 5 - n % 5, n, 5 - n % 5, n, 5 - n % 5]
-                     for n in range(1, 6)]
-        # Keep it simple: alternate SUS 30, 50, 70, 90, 100.
         scores = [
             [2, 4, 2, 4, 2, 4, 2, 4, 2, 4],  # SUS 20
             [3, 3, 3, 3, 3, 3, 3, 3, 3, 3],  # SUS 50
@@ -288,3 +285,32 @@ class TestFeedbackFlow:
         assert reqs[1].critic_feedback == "f1"
         assert reqs[1].suggestions == ["s1"]
         assert reqs[1].prior_html is not None
+
+    def test_regression_reseeds_from_best_iteration(
+        self, cfg: orchestrator.LoopConfig, monkeypatch: pytest.MonkeyPatch
+    ):
+        """Greedy hill-climb: after a score regression, the next generation
+        evolves from the best iteration's artifacts, not the regressed ones."""
+        run = FakeRun(
+            scores=[
+                [4, 2] * 5,  # iter 1: SUS 75 -> becomes best
+                [3, 3] * 5,  # iter 2: SUS 50 -> regression
+                [3, 3] * 5,  # iter 3
+                [3, 3] * 5,  # iter 4 (patience=3 -> converged)
+            ],
+            feedbacks=["f1", "f2", "f3", "f4"],
+            suggestions=[["s1"], ["s2"], ["s3"], ["s4"]],
+        )
+        run.install(monkeypatch)
+        result = orchestrator.run_loop_sync(cfg)
+        assert result.best_iter == 1
+
+        reqs = run.generated_requests
+        # Iter 2 evolves from iter 1 (the best so far) — unchanged behavior.
+        assert "iter 1" in reqs[1].prior_html
+        assert reqs[1].critic_feedback == "f1"
+        # Iter 3 must NOT evolve from the regressed iter 2: it re-seeds from
+        # the best iteration's HTML and critique.
+        assert "iter 1" in reqs[2].prior_html
+        assert reqs[2].critic_feedback == "f1"
+        assert reqs[2].suggestions == ["s1"]

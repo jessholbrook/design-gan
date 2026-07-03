@@ -2,13 +2,10 @@
 
 from __future__ import annotations
 
-import pytest
 
 from design_gan.critic import (
     CUS_ITEMS,
     CUS_TRIO,
-    CUS_TONE_CRITIC,
-    CUS_TRUST_CRITIC,
     CUS_USABILITY_CRITIC,
     DEFAULT_CUS_CRITIC,
     _build_cus_user_message,

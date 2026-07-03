@@ -12,7 +12,11 @@ from typing import Any
 # render() so the rest of the package (storage, scorer, viewer) can be used
 # without it installed.
 
-# Pinned to a stable release.
+# axe-core 4.10.0 is vendored into the package so renders are deterministic
+# and offline-safe — a CDN blip mid-render would otherwise silently zero the
+# a11y penalty and look like a score improvement. The CDN URL remains as a
+# fallback for source checkouts that somehow lack the vendored file.
+_AXE_PATH = Path(__file__).parent / "vendor" / "axe.min.js"
 AXE_CDN = "https://cdnjs.cloudflare.com/ajax/libs/axe-core/4.10.0/axe.min.js"
 
 
@@ -58,7 +62,10 @@ async def render(html: str, viewport: tuple[int, int] = (1280, 800)) -> RenderRe
             axe_violations: list[dict[str, Any]] = []
             axe_error: str | None = None
             try:
-                await page.add_script_tag(url=AXE_CDN)
+                if _AXE_PATH.is_file():
+                    await page.add_script_tag(path=str(_AXE_PATH))
+                else:
+                    await page.add_script_tag(url=AXE_CDN)
                 result_json = await page.evaluate(
                     "async () => JSON.stringify(await axe.run(document))"
                 )

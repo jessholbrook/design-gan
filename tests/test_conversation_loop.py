@@ -12,7 +12,6 @@ from design_gan import (
     orchestrator,
     storage,
     transcript_renderer,
-    user_simulator,
 )
 from design_gan.critic import SUSResponse
 

@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import os
 from pathlib import Path
 
 import pytest
@@ -94,6 +93,13 @@ class TestArtifactRoutes:
         assert r.status_code == 200
         assert "<html" in r.text.lower() or "<body" in r.text.lower()
 
+    def test_site_html_is_sandboxed(self, client: TestClient):
+        """Generated HTML is untrusted (LLM-authored, brief-shaped). The CSP
+        sandbox gives it an opaque origin so its scripts can't read this
+        origin's localStorage (start token) or call the API as our origin."""
+        r = client.get("/runs/1/iters/1/site")
+        assert r.headers.get("content-security-policy") == "sandbox allow-scripts"
+
     def test_missing_screenshot_is_404(self, client: TestClient):
         r = client.get("/runs/1/iters/99/screenshot")
         assert r.status_code == 404
@@ -122,7 +128,6 @@ class TestStatic:
     def test_static_absolute_path_rejected(self, client: TestClient, tmp_path: Path):
         # Absolute URL-encoded path — Path() joining an absolute operand
         # silently escapes the static dir unless we resolve and clamp it.
-        import os
         # Use a real file outside the static dir and try to fetch it.
         outside = tmp_path / "secret.txt"
         outside.write_text("SHOULD NOT BE SERVED")
@@ -328,7 +333,7 @@ class TestBootSweep:
         store = Storage(tmp_path / "design-gan.sqlite")
         rid = store.create_run("ghost", "m")
         from design_gan import viewer
-        with TestClient(viewer.app) as client:
+        with TestClient(viewer.app):
             # Opening TestClient triggers the startup event.
             pass
         # The ghost run should now be errored.

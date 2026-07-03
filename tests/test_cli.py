@@ -13,7 +13,7 @@ def test_help_shows_commands():
     runner = CliRunner()
     r = runner.invoke(app, ["--help"])
     assert r.exit_code == 0
-    for cmd in ("run", "list-runs", "demo", "viewer"):
+    for cmd in ("run", "list-runs", "demo", "viewer", "export"):
         assert cmd in r.output
 
 
@@ -33,3 +33,27 @@ def test_demo_seeds_and_then_list_runs_shows_it(tmp_path: Path):
     r2 = runner.invoke(app, ["list-runs", "--runs-dir", str(tmp_path)])
     assert r2.exit_code == 0
     assert "DEMO" in r2.output
+
+
+def test_export_writes_best_iteration_html(tmp_path: Path):
+    runner = CliRunner()
+    r = runner.invoke(app, ["demo", "--runs-dir", str(tmp_path)])
+    assert r.exit_code == 0, r.output
+
+    out = tmp_path / "best.html"
+    r2 = runner.invoke(
+        app, ["export", "1", "--runs-dir", str(tmp_path), "--out", str(out)]
+    )
+    assert r2.exit_code == 0, r2.output
+    assert "Exported" in r2.output
+    assert out.is_file()
+    assert "<html" in out.read_text(encoding="utf-8").lower()
+
+
+def test_export_unknown_run_fails(tmp_path: Path):
+    runner = CliRunner()
+    # Initialize an empty db via list-runs, then export a missing run.
+    runner.invoke(app, ["list-runs", "--runs-dir", str(tmp_path)])
+    r = runner.invoke(app, ["export", "42", "--runs-dir", str(tmp_path)])
+    assert r.exit_code == 1
+    assert "not found" in r.output

@@ -6,7 +6,9 @@ import asyncio
 import hmac
 import html
 import json
+import logging
 import os
+from functools import lru_cache
 from pathlib import Path
 
 from contextlib import asynccontextmanager
@@ -63,8 +65,15 @@ def _configured_critics() -> list[critic.CriticProfile] | None:
     return None
 
 
+@lru_cache(maxsize=8)
+def _storage_for(db_path: str) -> storage.Storage:
+    """One Storage per db path. Storage.__init__ runs the schema script and
+    migrations, so constructing it per request (or per SSE poll) is wasteful."""
+    return storage.Storage(db_path)
+
+
 def _store() -> storage.Storage:
-    return storage.Storage(_runs_dir() / "design-gan.sqlite")
+    return _storage_for(str(_runs_dir() / "design-gan.sqlite"))
 
 
 @asynccontextmanager
@@ -72,7 +81,6 @@ async def _lifespan(app_: FastAPI):
     """Boot-time cleanup: any run still marked 'running' is a ghost from a
     prior machine (restart, OOM, etc.). Mark them errored so the UI doesn't
     show a spinner that never resolves."""
-    import logging
     log = logging.getLogger(__name__)
     try:
         swept = _store().sweep_abandoned_runs(0)
@@ -436,12 +444,20 @@ def screenshot(run_id: int, it: int) -> FileResponse:
     return FileResponse(path)
 
 
-@app.get("/runs/{run_id}/iters/{it}/site", response_class=HTMLResponse)
-def site(run_id: int, it: int) -> str:
+@app.get("/runs/{run_id}/iters/{it}/site")
+def site(run_id: int, it: int) -> HTMLResponse:
     path = _runs_dir() / f"run_{run_id:04d}" / f"iter_{it:03d}" / "site.html"
     if not path.exists():
         raise HTTPException(404)
-    return path.read_text(encoding="utf-8")
+    # The generated HTML is LLM-authored and shaped by user-supplied briefs, so
+    # treat it as untrusted. CSP `sandbox` gives the document an opaque origin:
+    # its scripts still run (the site stays viewable) but it can't reach this
+    # origin's localStorage (where the start token is cached) or call the API
+    # with our origin's authority.
+    return HTMLResponse(
+        path.read_text(encoding="utf-8"),
+        headers={"Content-Security-Policy": "sandbox allow-scripts"},
+    )
 
 
 @app.get("/runs/{run_id}/iters/{it}/transcript")
@@ -603,8 +619,28 @@ async def start_run(
         else orchestrator.run_loop_sync
     )
     # Run the loop in a background thread so the event loop stays free to serve SSE.
-    asyncio.create_task(asyncio.to_thread(entry, cfg, None, run_id))
+    task = asyncio.create_task(asyncio.to_thread(entry, cfg, None, run_id))
+    _track_run_task(task, run_id)
     return JSONResponse({"run_id": run_id})
+
+
+# Hold references to in-flight run tasks: asyncio only keeps weak references,
+# so an untracked fire-and-forget task can be garbage-collected mid-run and
+# its exception silently dropped.
+_run_tasks: set[asyncio.Task] = set()
+
+
+def _track_run_task(task: asyncio.Task, run_id: int) -> None:
+    _run_tasks.add(task)
+
+    def _done(t: asyncio.Task) -> None:
+        _run_tasks.discard(t)
+        if not t.cancelled() and t.exception() is not None:
+            logging.getLogger(__name__).error(
+                "background task for run %s died", run_id, exc_info=t.exception()
+            )
+
+    task.add_done_callback(_done)
 
 
 @app.get("/runs/{run_id}/stream")
@@ -614,15 +650,19 @@ async def stream_run(run_id: int, since: int = 0) -> StreamingResponse:
     async def event_source():
         last_iter = since
         last_phase_key: tuple[int | None, str | None] | None = None
+        store = _store()
         # Short keep-alive loop; stop once the run has a terminal status.
         while True:
-            store = _store()
-            run = store.get_run(run_id)
+            # SQLite calls are synchronous; run them in a worker thread so a
+            # slow read never stalls the event loop (and other SSE clients).
+            run = await asyncio.to_thread(store.get_run, run_id)
             if not run:
                 yield _sse("error", {"message": "run not found"})
                 return
             # Newly completed iterations.
-            new = store.iterations_for_run(run_id, after_iter=last_iter)
+            new = await asyncio.to_thread(
+                store.iterations_for_run, run_id, last_iter
+            )
             for it in new:
                 yield _sse("iteration", {"run_id": run_id, "iter": it})
                 last_iter = it["iter"]

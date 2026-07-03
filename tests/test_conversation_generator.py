@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import pytest
 
 from design_gan.conversation_generator import (
     ConversationGenerationRequest,

@@ -102,8 +102,14 @@ class Storage:
 
     @contextmanager
     def _conn(self) -> Iterator[sqlite3.Connection]:
-        conn = sqlite3.connect(self.db_path)
+        # The run loop writes from a worker thread while the viewer reads from
+        # the web server, so configure for concurrency: WAL lets readers and
+        # the writer proceed without blocking each other, and the generous
+        # busy timeout rides out any residual lock contention.
+        conn = sqlite3.connect(self.db_path, timeout=30.0)
         conn.row_factory = sqlite3.Row
+        conn.execute("PRAGMA journal_mode=WAL")
+        conn.execute("PRAGMA foreign_keys=ON")
         try:
             yield conn
             conn.commit()

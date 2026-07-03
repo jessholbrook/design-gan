@@ -216,7 +216,6 @@ def seed_demo(runs_dir: Path) -> int:
     from .scorer import score as score_fn
 
     best_iter, best_score = 0, -1.0
-    total_cost = 0.0
     for i, it in enumerate(_ITERS, start=1):
         iter_dir = run_dir / f"iter_{i:03d}"
         iter_dir.mkdir(parents=True, exist_ok=True)

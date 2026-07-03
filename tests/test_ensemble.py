@@ -7,12 +7,9 @@ from pathlib import Path
 import pytest
 
 from design_gan.critic import (
-    CONTENT_CRITIC,
-    CriticProfile,
     SUSResponse,
     TRIO,
     USABILITY_CRITIC,
-    VISUAL_CRITIC,
     _aggregate,
     _dedupe_suggestions,
 )
