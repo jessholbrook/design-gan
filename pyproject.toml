@@ -5,7 +5,7 @@ build-backend = "hatchling.build"
 [project]
 name = "design-gan"
 version = "0.1.0"
-description = "Autoresearch-style dual-agent loop that evolves single-page websites by critiquing them on the System Usability Scale."
+description = "Autonomous single-page product optimization using behavioral browser tasks and promotion guardrails."
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [

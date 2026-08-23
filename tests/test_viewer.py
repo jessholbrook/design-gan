@@ -132,6 +132,7 @@ class TestStatic:
         outside = tmp_path / "secret.txt"
         outside.write_text("SHOULD NOT BE SERVED")
         from urllib.parse import quote
+
         r = client.get(f"/static/{quote(str(outside.resolve()))}")
         assert r.status_code in (404, 400)
         assert "SHOULD NOT BE SERVED" not in r.text
@@ -159,17 +160,20 @@ class TestJsonApi:
         it = data["iterations"][0]
         # The scrubber (static/scrub.js) reads every one of these per iteration;
         # this locks the JSON contract it depends on.
-        assert set(
-            [
-                "iter",
-                "composite_score",
-                "sus_score",
-                "axe_penalty",
-                "sus_answers",
-                "feedback",
-                "suggestions",
-            ]
-        ).issubset(it)
+        assert {
+            "iter",
+            "composite_score",
+            "sus_score",
+            "axe_penalty",
+            "sus_answers",
+            "feedback",
+            "suggestions",
+            "primary_score",
+            "primary_metric",
+            "promotion_eligible",
+            "guardrails",
+            "task_results",
+        }.issubset(it)
 
     def test_api_unknown_run_is_404(self, client: TestClient):
         r = client.get("/api/runs/999")
@@ -186,9 +190,7 @@ class TestStartRunValidation:
         assert r.status_code == 422
 
     def test_oversized_max_iters_rejected(self, client: TestClient):
-        r = client.post(
-            "/api/runs", json={"brief": "x", "max_iters": 1000}
-        )
+        r = client.post("/api/runs", json={"brief": "x", "max_iters": 1000})
         assert r.status_code == 422
 
 
@@ -196,9 +198,7 @@ class TestStartTokenGate:
     """When DESIGN_GAN_START_TOKEN is set, /api/runs rejects unauthenticated POSTs."""
 
     @pytest.fixture
-    def gated_client(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-    ) -> TestClient:
+    def gated_client(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> TestClient:
         monkeypatch.setenv("DESIGN_GAN_RUNS_DIR", str(tmp_path))
         monkeypatch.setenv("DESIGN_GAN_START_TOKEN", "s3cret")
         from design_gan import viewer
@@ -220,9 +220,7 @@ class TestStartTokenGate:
         assert r.status_code == 401
 
     def test_wrong_token_rejected(self, gated_client: TestClient):
-        r = gated_client.post(
-            "/api/runs", json={"brief": "x", "token": "nope"}
-        )
+        r = gated_client.post("/api/runs", json={"brief": "x", "token": "nope"})
         assert r.status_code == 401
 
     def test_correct_body_token_accepted(
@@ -230,17 +228,22 @@ class TestStartTokenGate:
     ):
         # Prevent the orchestrator from actually being called.
         from design_gan import orchestrator
+
         monkeypatch.setattr(orchestrator, "run_loop_sync", lambda *a, **kw: None)
-        r = gated_client.post(
-            "/api/runs", json={"brief": "x", "token": "s3cret"}
-        )
+        r = gated_client.post("/api/runs", json={"brief": "x", "token": "s3cret"})
         assert r.status_code == 200
-        assert "run_id" in r.json()
+        run_id = r.json()["run_id"]
+        run = gated_client.get(f"/api/runs/{run_id}").json()["run"]
+        assert [task["id"] for task in run["evaluation_suite"]] == ["primary-action"]
+        detail = gated_client.get(f"/runs/{run_id}").text
+        assert "Frozen browser tasks" in detail
+        assert "best task score" in detail
 
     def test_bearer_header_accepted(
         self, gated_client: TestClient, monkeypatch: pytest.MonkeyPatch
     ):
         from design_gan import orchestrator
+
         monkeypatch.setattr(orchestrator, "run_loop_sync", lambda *a, **kw: None)
         r = gated_client.post(
             "/api/runs",
@@ -268,12 +271,11 @@ class TestBudgetGate:
     """Rejects POST /api/runs when the 24h spend has hit the cap."""
 
     @pytest.fixture
-    def budgeted_client(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-    ) -> TestClient:
+    def budgeted_client(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> TestClient:
         monkeypatch.setenv("DESIGN_GAN_RUNS_DIR", str(tmp_path))
         monkeypatch.setenv("DESIGN_GAN_DAILY_BUDGET_USD", "1.00")
         from design_gan import viewer
+
         seed_demo(tmp_path)
         return TestClient(viewer.app)
 
@@ -284,18 +286,30 @@ class TestBudgetGate:
         assert r["budget_remaining_usd"] == 1.0
 
     def test_over_budget_returns_429(
-        self, budgeted_client: TestClient, tmp_path: Path,
+        self,
+        budgeted_client: TestClient,
+        tmp_path: Path,
         monkeypatch: pytest.MonkeyPatch,
     ):
         # Force a big recent cost into the DB by inserting a synthetic iter.
         from design_gan.storage import IterationRecord, Storage
+
         store = Storage(tmp_path / "design-gan.sqlite")
-        store.save_iteration(IterationRecord(
-            run_id=1, iter=99, html="<html></html>",
-            sus_score=0.0, axe_penalty=0.0, composite_score=0.0,
-            sus_answers=[3]*10, feedback="f", suggestions=["s"],
-            artifacts_dir=str(tmp_path), cost_usd=2.50,
-        ))
+        store.save_iteration(
+            IterationRecord(
+                run_id=1,
+                iter=99,
+                html="<html></html>",
+                sus_score=0.0,
+                axe_penalty=0.0,
+                composite_score=0.0,
+                sus_answers=[3] * 10,
+                feedback="f",
+                suggestions=["s"],
+                artifacts_dir=str(tmp_path),
+                cost_usd=2.50,
+            )
+        )
         r = budgeted_client.post("/api/runs", json={"brief": "x"})
         assert r.status_code == 429
         body = r.json()["detail"]
@@ -305,16 +319,16 @@ class TestBudgetGate:
         self, budgeted_client: TestClient, monkeypatch: pytest.MonkeyPatch
     ):
         from design_gan import orchestrator
+
         monkeypatch.setattr(orchestrator, "run_loop_sync", lambda *a, **kw: None)
         r = budgeted_client.post("/api/runs", json={"brief": "x"})
         assert r.status_code == 200
 
-    def test_no_budget_means_no_check(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-    ):
+    def test_no_budget_means_no_check(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
         monkeypatch.setenv("DESIGN_GAN_RUNS_DIR", str(tmp_path))
         # budget env unset
         from design_gan import viewer, orchestrator
+
         seed_demo(tmp_path)
         monkeypatch.setattr(orchestrator, "run_loop_sync", lambda *a, **kw: None)
         c = TestClient(viewer.app)
@@ -324,15 +338,15 @@ class TestBudgetGate:
 
 
 class TestBootSweep:
-    def test_startup_clears_running_runs(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-    ):
+    def test_startup_clears_running_runs(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
         monkeypatch.setenv("DESIGN_GAN_RUNS_DIR", str(tmp_path))
         # Pre-seed a stuck "running" row before the app boots.
         from design_gan.storage import Storage
+
         store = Storage(tmp_path / "design-gan.sqlite")
         rid = store.create_run("ghost", "m")
         from design_gan import viewer
+
         with TestClient(viewer.app):
             # Opening TestClient triggers the startup event.
             pass
@@ -346,9 +360,7 @@ class TestConversationRoutes:
     """Routes specific to conversation runs: transcript JSON + styled view."""
 
     @pytest.fixture
-    def convo_client(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-    ) -> TestClient:
+    def convo_client(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> TestClient:
         monkeypatch.setenv("DESIGN_GAN_RUNS_DIR", str(tmp_path))
         import json as _json
         from design_gan import viewer
@@ -370,12 +382,21 @@ class TestConversationRoutes:
         }
         (iter_dir / "transcript.json").write_text(_json.dumps(transcript))
         (iter_dir / "system_prompt.txt").write_text("Be concrete.")
-        store.save_iteration(IterationRecord(
-            run_id=rid, iter=1, html="Be concrete.", sus_score=75.0,
-            axe_penalty=0.0, composite_score=75.0, sus_answers=[4, 2]*5,
-            feedback="good", suggestions=["tighten"], artifacts_dir=str(iter_dir),
-            cost_usd=0.04,
-        ))
+        store.save_iteration(
+            IterationRecord(
+                run_id=rid,
+                iter=1,
+                html="Be concrete.",
+                sus_score=75.0,
+                axe_penalty=0.0,
+                composite_score=75.0,
+                sus_answers=[4, 2] * 5,
+                feedback="good",
+                suggestions=["tighten"],
+                artifacts_dir=str(iter_dir),
+                cost_usd=0.04,
+            )
+        )
         store.finish_run(rid, 1, 75.0, "converged")
 
         return TestClient(viewer.app)
@@ -419,11 +440,13 @@ class TestStartRunKindBranching:
 
         calls = {"design": 0, "conversation": 0}
         monkeypatch.setattr(
-            orchestrator, "run_loop_sync",
+            orchestrator,
+            "run_loop_sync",
             lambda *a, **kw: calls.__setitem__("design", calls["design"] + 1),
         )
         monkeypatch.setattr(
-            orchestrator, "run_conversation_loop_sync",
+            orchestrator,
+            "run_conversation_loop_sync",
             lambda *a, **kw: calls.__setitem__("conversation", calls["conversation"] + 1),
         )
 
@@ -432,6 +455,7 @@ class TestStartRunKindBranching:
         assert r.status_code == 200
         # Backgrounded via asyncio.create_task; give it a beat.
         import time
+
         time.sleep(0.2)
         assert calls["conversation"] == 1
         assert calls["design"] == 0
@@ -444,11 +468,13 @@ class TestStartRunKindBranching:
 
         calls = {"design": 0, "conversation": 0}
         monkeypatch.setattr(
-            orchestrator, "run_loop_sync",
+            orchestrator,
+            "run_loop_sync",
             lambda *a, **kw: calls.__setitem__("design", calls["design"] + 1),
         )
         monkeypatch.setattr(
-            orchestrator, "run_conversation_loop_sync",
+            orchestrator,
+            "run_conversation_loop_sync",
             lambda *a, **kw: calls.__setitem__("conversation", calls["conversation"] + 1),
         )
 
@@ -456,6 +482,7 @@ class TestStartRunKindBranching:
         r = c.post("/api/runs", json={"brief": "x"})
         assert r.status_code == 200
         import time
+
         time.sleep(0.2)
         assert calls["design"] == 1
         assert calls["conversation"] == 0

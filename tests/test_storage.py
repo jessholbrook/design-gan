@@ -56,15 +56,25 @@ class TestInitAndSchema:
 
     def test_has_required_tables(self, store: Storage):
         with sqlite3.connect(store.db_path) as c:
-            tables = {row[0] for row in c.execute(
-                "SELECT name FROM sqlite_master WHERE type='table'"
-            ).fetchall()}
+            tables = {
+                row[0]
+                for row in c.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()
+            }
         assert {"runs", "iterations"}.issubset(tables)
 
     def test_runs_has_progress_columns(self, store: Storage):
         with sqlite3.connect(store.db_path) as c:
             cols = {row[1] for row in c.execute("PRAGMA table_info(runs)").fetchall()}
         assert {"current_iter", "current_phase", "error"}.issubset(cols)
+
+    def test_has_v2_evaluation_columns(self, store: Storage):
+        with sqlite3.connect(store.db_path) as c:
+            run_cols = {row[1] for row in c.execute("PRAGMA table_info(runs)")}
+            iter_cols = {row[1] for row in c.execute("PRAGMA table_info(iterations)")}
+        assert "evaluation_suite" in run_cols
+        assert {"primary_score", "promotion_eligible", "guardrails", "task_results"}.issubset(
+            iter_cols
+        )
 
 
 class TestMigration:
@@ -82,9 +92,7 @@ class TestMigration:
                 best_score REAL,
                 status TEXT NOT NULL DEFAULT 'running'
             )""")
-            c.execute(
-                "INSERT INTO runs(brief, model, created_at) VALUES ('b', 'm', 0.0)"
-            )
+            c.execute("INSERT INTO runs(brief, model, created_at) VALUES ('b', 'm', 0.0)")
             c.commit()
         # Open with the current Storage — migration should add missing columns.
         store = Storage(db)
@@ -102,6 +110,11 @@ class TestMigration:
 
 
 class TestRuns:
+    def test_frozen_evaluation_suite_roundtrips(self, store: Storage):
+        suite = [{"id": "primary-action", "name": "Primary action works"}]
+        rid = store.create_run("b", "m", evaluation_suite=suite)
+        assert store.get_run(rid)["evaluation_suite"] == suite
+
     def test_create_then_list(self, store: Storage):
         store.create_run("brief one", "model-a")
         store.create_run("brief two", "model-b")
@@ -162,6 +175,21 @@ class TestProgress:
 
 
 class TestIterations:
+    def test_v2_evaluation_results_roundtrip(self, store: Storage):
+        rid = store.create_run("b", "m")
+        rec = _sample_record(rid, 1)
+        rec.primary_score = 100.0
+        rec.primary_metric = "task_completion_rate"
+        rec.promotion_eligible = False
+        rec.guardrails = {"accessibility": {"passed": False}}
+        rec.task_results = [{"task_id": "primary-action", "passed": True}]
+        store.save_iteration(rec)
+        saved = store.iterations_for_run(rid)[0]
+        assert saved["primary_score"] == 100.0
+        assert saved["promotion_eligible"] is False
+        assert saved["guardrails"]["accessibility"]["passed"] is False
+        assert saved["task_results"][0]["passed"] is True
+
     def test_save_and_list(self, store: Storage):
         rid = store.create_run("b", "m")
         store.save_iteration(_sample_record(rid, 1, composite=40.0))
@@ -209,6 +237,7 @@ class TestCostAccounting:
 
     def test_cost_usd_since_respects_cutoff(self, store: Storage, monkeypatch):
         import time
+
         rid = store.create_run("b", "m")
         store.save_iteration(_sample_record(rid, 1, cost_usd=1.0))
         now = time.time()
@@ -243,6 +272,7 @@ class TestSweep:
 
     def test_sweep_catches_stale_heartbeat(self, store: Storage):
         import time
+
         rid = store.create_run("b", "m")
         store.update_progress(rid, 1, "generating")
         # Force the heartbeat into the past.

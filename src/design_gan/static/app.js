@@ -100,13 +100,14 @@
   function readIters() {
     return Array.from(grid.querySelectorAll('.iter-card')).map((card) => {
       const num = Number(card.dataset.iter);
-      const composite = Number(card.querySelector('.badge').textContent);
-      const sus = Number(card.querySelector('.stats b').textContent);
-      return { iter: num, composite, sus };
+      const composite = Number(card.dataset.score);
+      const sus = Number(card.dataset.sus);
+      const eligible = card.dataset.eligible !== '0';
+      return { iter: num, composite, sus, eligible };
     });
   }
 
-  // Simple SVG line chart: composite (solid blue) + SUS (dashed gray) over iterations.
+  // Solid = primary metric (task completion for v2 design); dashed = SUS/CUS diagnostic.
   function renderChart(iters) {
     if (!iters.length) {
       chartEl.innerHTML = '';
@@ -138,7 +139,10 @@
 
   function iterCardHtml(it) {
     const score = it.composite_score;
-    const cls = score >= 80 ? 'score-good' : score >= 60 ? 'score-ok' : 'score-bad';
+    let cls = score >= 80 ? 'score-good' : score >= 60 ? 'score-ok' : 'score-bad';
+    if (it.primary_metric === 'task_completion_rate' && !it.promotion_eligible) {
+      cls += ' score-blocked';
+    }
     const suggestions = (it.suggestions || []).map((s) =>
       `<li>${escapeHtml(s)}</li>`).join('');
     const kind = document.body.dataset.kind || 'design';
@@ -154,10 +158,18 @@
       thumb = `<a href="/runs/${runId}/iters/${it.iter}/site" target="_blank" class="thumb">
                  <img src="/runs/${runId}/iters/${it.iter}/screenshot" alt="Iter ${it.iter}" />
                </a>`;
-      stats = `<span>SUS <b>${it.sus_score.toFixed(0)}</b></span>
-               <span>a11y penalty <b>${it.axe_penalty.toFixed(0)}</b></span>`;
+      if (it.primary_metric === 'task_completion_rate') {
+        stats = `<span>tasks <b>${(it.primary_score || 0).toFixed(0)}</b></span>
+                 <span>SUS diagnostic <b>${it.sus_score.toFixed(0)}</b></span>
+                 <span>guardrails <b>${it.promotion_eligible ? 'eligible' : 'blocked'}</b></span>`;
+      } else {
+        stats = `<span>SUS <b>${it.sus_score.toFixed(0)}</b></span>
+                 <span>a11y penalty <b>${it.axe_penalty.toFixed(0)}</b></span>`;
+      }
     }
-    return `<article class="iter-card appearing" data-iter="${it.iter}">
+    return `<article class="iter-card appearing" data-iter="${it.iter}"
+      data-score="${score}" data-sus="${it.sus_score}"
+      data-eligible="${it.promotion_eligible ? 1 : 0}">
       <header>
         <span class="iter-num">#${it.iter}</span>
         <span class="badge ${cls}">${score.toFixed(0)}</span>
@@ -180,8 +192,16 @@
 
   function updateSummary(iters) {
     if (!iters.length) return;
-    let bestIter = iters[0], best = iters[0].composite;
-    for (const it of iters) {
+    const promotable = iters.filter((it) => it.eligible);
+    if (!promotable.length) {
+      statBest.textContent = '—';
+      statBest.className = 'score-none';
+      statBestIter.textContent = '—';
+      statCount.textContent = iters.length;
+      return;
+    }
+    let bestIter = promotable[0], best = promotable[0].composite;
+    for (const it of promotable) {
       if (it.composite > best) {
         best = it.composite;
         bestIter = it;
@@ -222,7 +242,12 @@
     // Append card
     grid.insertAdjacentHTML('beforeend', iterCardHtml(it));
     // Update chart data
-    iters.push({ iter: it.iter, composite: it.composite_score, sus: it.sus_score });
+    iters.push({
+      iter: it.iter,
+      composite: it.composite_score,
+      sus: it.sus_score,
+      eligible: it.promotion_eligible,
+    });
     renderChart(iters);
     updateSummary(iters);
   });

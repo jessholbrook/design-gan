@@ -1,4 +1,4 @@
-"""Main loop: generate -> render -> critique -> score; stop when score plateaus.
+"""Main loop: generate -> render/evaluate -> critique -> score; stop on a plateau.
 
 Design runs and conversation runs share one loop skeleton (`_run_shared_loop`)
 and differ only in their per-iteration body:
@@ -17,13 +17,15 @@ from __future__ import annotations
 
 import asyncio
 import traceback
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Awaitable, Callable
+from typing import Any
 
 from rich.console import Console
 
 from . import (
+    browser_evaluator,
     conversation_generator,
     critic,
     generator,
@@ -37,6 +39,7 @@ from . import (
 # which stage of which iteration is in flight.
 PHASE_GENERATING = "generating"
 PHASE_RENDERING = "rendering"
+PHASE_EVALUATING = "evaluating"
 PHASE_CRITIQUING = "critiquing"
 # Conversation runs replace the renderer phase with a multi-turn dialogue.
 PHASE_CONVERSING = "conversing"
@@ -65,6 +68,9 @@ class LoopConfig:
     # turns). 1-5 feels right; 5 is usually enough to surface resolution
     # without exploding cost.
     max_conversation_turns: int = 5
+    # Frozen once at run start and replayed unchanged against every design
+    # candidate.  v2 begins with one concrete primary-action task.
+    design_tasks: tuple[browser_evaluator.BrowserTask, ...] = browser_evaluator.DEFAULT_DESIGN_TASKS
 
 
 @dataclass
@@ -94,6 +100,8 @@ class _IterOutcome:
     sus: critic.SUSResponse
     critic_breakdown: list[dict[str, Any]] | None
     cost_usd: float
+    feedback: str | None = None
+    suggestions: list[str] | None = None
     console_extra: str = ""  # appended to the score line, e.g. turns/satisfied
 
 
@@ -136,6 +144,19 @@ async def _design_iterate(
     render = await renderer.render(html, viewport=cfg.viewport)
     artifacts = renderer.write_artifacts(render, iter_dir)
 
+    # --- behavioral evaluation ------------------------------------------------
+    # Replay the exact same frozen task suite on a fresh page.  This completion
+    # rate is the north-star signal for design search; it is not blended with
+    # the critic's SUS opinion.
+    store.update_progress(run_id, i, PHASE_EVALUATING)
+    console.print(f"[dim]evaluating ({len(cfg.design_tasks)} frozen browser task(s))...[/dim]")
+    evaluation = await browser_evaluator.evaluate(
+        html,
+        tasks=cfg.design_tasks,
+        viewport=cfg.viewport,
+    )
+    browser_evaluator.write_artifact(evaluation, iter_dir)
+
     # --- critique ---------------------------------------------------------------
     store.update_progress(run_id, i, PHASE_CRITIQUING)
     critic_breakdown: list[dict[str, Any]] | None = None
@@ -160,13 +181,36 @@ async def _design_iterate(
         )
     cost += crit_cost
 
-    result = scorer.score(list(sus.sus), render.axe_violations)
+    result = scorer.design_score(
+        list(sus.sus),
+        render.axe_violations,
+        task_score=evaluation.score,
+        task_results=[task.to_dict() for task in evaluation.tasks],
+        axe_error=render.axe_error,
+        console_errors=render.console_errors,
+        evaluator_errors=evaluation.correctness_errors,
+    )
+    optimization_feedback = (
+        f"{evaluation.feedback()}\n\n"
+        f"Diagnostic SUS feedback (not the primary score): {sus.feedback}"
+    )
+    optimization_suggestions = list(sus.suggestions)
+    if evaluation.passed < evaluation.total:
+        optimization_suggestions.insert(
+            0,
+            "Make the page's primary call to action obvious, enabled, and behaviorally "
+            "functional: activating it must navigate, scroll, open a dialog/window, or "
+            "change visible content without runtime errors.",
+        )
     return _IterOutcome(
         artifact=html,
         score=result,
         sus=sus,
         critic_breakdown=critic_breakdown,
         cost_usd=cost,
+        feedback=optimization_feedback,
+        suggestions=optimization_suggestions,
+        console_extra=f"  promotable={result.promotion_eligible}",
     )
 
 
@@ -268,7 +312,17 @@ async def _run_shared_loop(
     console = console or Console()
     store = storage.Storage(cfg.db_path)
     if run_id is None:
-        run_id = store.create_run(cfg.brief, cfg.model, kind=kind)
+        suite = (
+            [task.to_dict() for task in browser_evaluator.frozen_suite(cfg.design_tasks)]
+            if kind == KIND_DESIGN
+            else None
+        )
+        run_id = store.create_run(
+            cfg.brief,
+            cfg.model,
+            kind=kind,
+            evaluation_suite=suite,
+        )
     run_dir = cfg.runs_dir / f"run_{run_id:04d}"
     run_dir.mkdir(parents=True, exist_ok=True)
 
@@ -311,11 +365,16 @@ async def _run_shared_loop(
                         axe_penalty=out.score.axe_penalty,
                         composite_score=out.score.composite,
                         sus_answers=list(out.sus.sus),
-                        feedback=out.sus.feedback,
-                        suggestions=out.sus.suggestions,
+                        feedback=out.feedback or out.sus.feedback,
+                        suggestions=out.suggestions or out.sus.suggestions,
                         artifacts_dir=str(run_dir / f"iter_{i:03d}"),
                         cost_usd=out.cost_usd,
                         critic_breakdown=out.critic_breakdown,
+                        primary_score=out.score.composite,
+                        primary_metric=out.score.primary_metric,
+                        promotion_eligible=out.score.promotion_eligible,
+                        guardrails=out.score.guardrails,
+                        task_results=out.score.breakdown.get("task_results"),
                     )
                 )
             except Exception as e:
@@ -331,22 +390,23 @@ async def _run_shared_loop(
                 continue
 
             console.print(
-                f"[bold]score[/bold]: {score_label}={out.score.sus:.1f}  "
+                f"[bold]score[/bold]: {score_label}={out.score.composite:.1f}  "
+                f"diagnostic={out.score.sus:.1f}  "
                 f"{penalty_label}={out.score.axe_penalty:.1f}  "
-                f"[green]composite={out.score.composite:.1f}[/green]  "
                 f"[dim]cost=${out.cost_usd:.3f}{out.console_extra}[/dim]"
             )
-            feedback_txt = (
-                out.sus.feedback[:feedback_limit] if feedback_limit else out.sus.feedback
-            )
+            next_feedback = out.feedback or out.sus.feedback
+            feedback_txt = next_feedback[:feedback_limit] if feedback_limit else next_feedback
             console.print(f"[dim]feedback:[/dim] {feedback_txt}")
 
             current = _IterState(
                 artifact=out.artifact,
-                feedback=out.sus.feedback,
-                suggestions=out.sus.suggestions,
+                feedback=next_feedback,
+                suggestions=out.suggestions or out.sus.suggestions,
             )
-            if best_score is None or out.score.composite > best_score + cfg.tolerance:
+            if out.score.promotion_eligible and (
+                best_score is None or out.score.composite > best_score + cfg.tolerance
+            ):
                 best_score = out.score.composite
                 best_iter = i
                 stale = 0
@@ -357,7 +417,11 @@ async def _run_shared_loop(
                 # Regression or plateau: re-seed the next generation from the
                 # best iteration so the search never drifts downhill from a
                 # bad ancestor.
-                prev = best
+                # Before any candidate clears the guardrails, keep evolving
+                # from the latest artifact so its concrete failures can be
+                # repaired.  Once a promotable best exists, regressions and
+                # blocked candidates re-seed from that safe ancestor.
+                prev = best if best_score is not None else current
 
             if stale >= cfg.patience:
                 status = "converged"
@@ -395,7 +459,7 @@ async def run_loop(
         run_id,
         kind=KIND_DESIGN,
         rule_prefix="Run",
-        score_label="SUS",
+        score_label="tasks",
         penalty_label="a11y_penalty",
         feedback_limit=None,
         iterate=_design_iterate,
@@ -424,7 +488,7 @@ async def run_conversation_loop(
         run_id,
         kind=KIND_CONVERSATION,
         rule_prefix="Conversation run",
-        score_label="CUS",
+        score_label="CUS composite",
         penalty_label="objective_penalty",
         feedback_limit=200,
         iterate=_conversation_iterate,

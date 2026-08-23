@@ -15,6 +15,7 @@
   let iters = [];
   let idx = 0;
   let bestIdx = 0;
+  let hasPromotedBest = false;
   let mode = 'single'; // 'single' | 'prev' | 'best' (design runs only)
   let split = 0.5; // compare divider fraction, persists across iterations
   const transcriptCache = new Map();
@@ -40,7 +41,7 @@
     // The iteration the current one is being measured against, or null when
     // there's nothing meaningful to compare (first iter / already the peak).
     if (mode === 'prev') return idx > 0 ? iters[idx - 1] : null;
-    if (mode === 'best') return idx !== bestIdx ? iters[bestIdx] : null;
+    if (mode === 'best') return hasPromotedBest && idx !== bestIdx ? iters[bestIdx] : null;
     return null;
   }
 
@@ -191,11 +192,28 @@
   }
 
   function critiqueLabel() {
-    return kind === 'conversation' ? 'CUS' : 'SUS';
+    return kind === 'conversation' ? 'CUS' : 'SUS diagnostic';
   }
 
   function penaltyLabel() {
     return kind === 'conversation' ? 'penalty' : 'a11y penalty';
+  }
+
+  function taskResults(it) {
+    if (it.primary_metric !== 'task_completion_rate') return '';
+    const tasks = (it.task_results || []).map((task) => {
+      const detail = (task.observed || task.errors || []).join('; ');
+      return `<li><b>${task.passed ? 'PASS' : 'FAIL'}</b>
+        ${escapeHtml(task.name || task.task_id || 'task')}
+        ${detail ? `— ${escapeHtml(detail)}` : ''}</li>`;
+    }).join('');
+    const gates = it.guardrails || {};
+    const a11y = gates.accessibility && gates.accessibility.passed;
+    const correctness = gates.correctness && gates.correctness.passed;
+    return `<h3>Behavioral evaluation</h3>
+      <p class="scrub-feedback">Promotion: <b>${it.promotion_eligible ? 'eligible' : 'blocked'}</b>
+      · accessibility ${a11y ? 'pass' : 'fail'} · correctness ${correctness ? 'pass' : 'fail'}</p>
+      ${tasks ? `<ul class="scrub-suggestions">${tasks}</ul>` : ''}`;
   }
 
   function criticBreakdown(it) {
@@ -243,22 +261,27 @@
           <span class="scrub-iter-label">Iteration</span>
           <span class="scrub-iter-num">#${it.iter}</span>
         </div>
-        <span class="badge ${scoreClass(it.composite_score)}">
+        <span class="badge ${scoreClass(it.composite_score)}${
+          it.primary_metric === 'task_completion_rate' && !it.promotion_eligible ? ' score-blocked' : ''
+        }">
           ${it.composite_score.toFixed(0)}
         </span>
       </div>
       <div class="scrub-delta-row">${deltaBadge()}</div>
       <div class="scrub-stats">
+        ${it.primary_metric === 'task_completion_rate' ?
+          `<div><span class="muted">tasks</span><b>${it.composite_score.toFixed(0)}</b></div>` : ''}
         <div><span class="muted">${critiqueLabel()}</span>
           <b>${it.sus_score.toFixed(0)}</b></div>
         <div><span class="muted">${penaltyLabel()}</span>
           <b>${it.axe_penalty.toFixed(0)}</b></div>
         ${
-          bestIdx === idx
+          hasPromotedBest && bestIdx === idx
             ? '<div><span class="muted">peak</span><b class="score-good">★</b></div>'
             : ''
         }
       </div>
+      ${taskResults(it)}
       ${askedToFix()}
       <h3>Critic feedback</h3>
       <p class="scrub-feedback">${escapeHtml(it.feedback)}</p>
@@ -289,7 +312,8 @@
               preserveAspectRatio="none" aria-hidden="true">
         <polyline points="${pts}" />
         <circle cx="${x(idx)}" cy="${y(scores[idx])}" r="2.5" class="cur" />
-        <circle cx="${x(bestIdx)}" cy="${y(scores[bestIdx])}" r="2" class="best" />
+        ${hasPromotedBest ?
+          `<circle cx="${x(bestIdx)}" cy="${y(scores[bestIdx])}" r="2" class="best" />` : ''}
       </svg>`;
   }
 
@@ -308,7 +332,7 @@
               (it, j) =>
                 `<button type="button" class="scrub-tick${
                   j === idx ? ' active' : ''
-                }${j === bestIdx ? ' best' : ''}" data-j="${j}"
+                }${hasPromotedBest && j === bestIdx ? ' best' : ''}" data-j="${j}"
                   title="Iteration ${it.iter} · ${it.composite_score.toFixed(0)}">
                   #${it.iter}
                 </button>`
@@ -362,12 +386,11 @@
           '<div class="scrub-loading muted">This run has no iterations yet.</div>';
         return;
       }
-      bestIdx = iters.reduce(
-        (best, it, j) =>
-          it.composite_score > iters[best].composite_score ? j : best,
-        0
-      );
-      idx = bestIdx;
+      const recordedBest = data.run && data.run.best_iter;
+      const recordedBestIdx = iters.findIndex((it) => it.iter === recordedBest);
+      hasPromotedBest = recordedBestIdx >= 0;
+      bestIdx = hasPromotedBest ? recordedBestIdx : 0;
+      idx = hasPromotedBest ? bestIdx : iters.length - 1;
 
       // Compare modes only make sense for design runs with >1 iteration.
       const modesEl = document.getElementById('scrub-modes');

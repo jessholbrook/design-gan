@@ -7,7 +7,7 @@ from typing import Any
 
 import pytest
 
-from design_gan import orchestrator, storage
+from design_gan import browser_evaluator, orchestrator, scorer, storage
 from design_gan.critic import SUSResponse
 from design_gan.renderer import RenderResult
 
@@ -29,12 +29,14 @@ class FakeRun:
         scores: list[list[int]],
         feedbacks: list[str] | None = None,
         suggestions: list[list[str]] | None = None,
+        task_scores: list[float] | None = None,
         fail_on: set[int] | None = None,
         fail_phase: str = "generate",
     ):
         self.scores = scores
         self.feedbacks = feedbacks or ["feedback"] * len(scores)
         self.suggestions = suggestions or [["s1"]] * len(scores)
+        self.task_scores = task_scores
         self.fail_on = fail_on or set()
         self.fail_phase = fail_phase
         self.iter = 0
@@ -42,7 +44,10 @@ class FakeRun:
         self.critiqued_briefs: list[str] = []
 
     def install(
-        self, monkeypatch: pytest.MonkeyPatch, *, gen_cost: float = 0.0,
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        *,
+        gen_cost: float = 0.0,
         critic_cost: float = 0.0,
     ) -> None:
         async def fake_generate(model, req):
@@ -63,6 +68,26 @@ class FakeRun:
                 dom_html="<html></html>",
                 axe_violations=[],
                 console_errors=[],
+            )
+
+        async def fake_evaluate(html, *, tasks, viewport=(1280, 800)):
+            value = (
+                self.task_scores[self.iter - 1]
+                if self.task_scores is not None
+                else scorer.sus_score(self.scores[self.iter - 1])
+            )
+            return browser_evaluator.EvaluationResult(
+                score=value,
+                tasks=[
+                    browser_evaluator.TaskResult(
+                        task_id="primary-action",
+                        name="Primary action works",
+                        instruction="activate it",
+                        passed=value > 0,
+                        target="Start",
+                        observed=["visible content changed"] if value > 0 else [],
+                    )
+                ],
             )
 
         def fake_write_artifacts(render, out_dir):
@@ -90,6 +115,7 @@ class FakeRun:
         monkeypatch.setattr(orchestrator.generator, "generate", fake_generate)
         monkeypatch.setattr(orchestrator.renderer, "render", fake_render)
         monkeypatch.setattr(orchestrator.renderer, "write_artifacts", fake_write_artifacts)
+        monkeypatch.setattr(orchestrator.browser_evaluator, "evaluate", fake_evaluate)
         monkeypatch.setattr(orchestrator.critic, "critique", fake_critique)
 
 
@@ -107,6 +133,50 @@ def cfg(tmp_path: Path) -> orchestrator.LoopConfig:
 
 
 class TestConvergence:
+    def test_design_selection_uses_tasks_not_sus(
+        self, cfg: orchestrator.LoopConfig, monkeypatch: pytest.MonkeyPatch
+    ):
+        run = FakeRun(
+            scores=[[5, 1] * 5, [1, 5] * 5],  # SUS falls 100 -> 0
+            task_scores=[0.0, 100.0],  # task completion improves
+        )
+        cfg.max_iters = 2
+        run.install(monkeypatch)
+        result = orchestrator.run_loop_sync(cfg)
+        assert result.best_iter == 2
+        assert result.best_score == 100.0
+
+    def test_guardrail_blocks_promotion_even_with_higher_task_score(
+        self, cfg: orchestrator.LoopConfig, monkeypatch: pytest.MonkeyPatch
+    ):
+        run = FakeRun(scores=[[3] * 10, [3] * 10], task_scores=[100.0, 50.0])
+        cfg.max_iters = 2
+        run.install(monkeypatch)
+
+        async def evaluated(html, *, tasks, viewport=(1280, 800)):
+            score = run.task_scores[run.iter - 1]
+            errors = ["page crashed"] if run.iter == 1 else []
+            return browser_evaluator.EvaluationResult(
+                score=score,
+                tasks=[
+                    browser_evaluator.TaskResult(
+                        task_id="primary-action",
+                        name="Primary action works",
+                        instruction="activate it",
+                        passed=score > 0,
+                        target="Start",
+                        observed=["visible content changed"],
+                        errors=errors,
+                    )
+                ],
+                correctness_errors=errors,
+            )
+
+        monkeypatch.setattr(orchestrator.browser_evaluator, "evaluate", evaluated)
+        result = orchestrator.run_loop_sync(cfg)
+        assert result.best_iter == 2
+        assert result.best_score == 50.0
+
     def test_converges_when_scores_plateau(
         self, cfg: orchestrator.LoopConfig, monkeypatch: pytest.MonkeyPatch
     ):
@@ -213,7 +283,8 @@ class TestArtifacts:
         orchestrator.run_loop_sync(cfg)
         store = storage.Storage(cfg.db_path)
         iters = store.iterations_for_run(1)
-        assert iters[0]["feedback"] == "great job"
+        assert "Behavioral task completion: 1/1" in iters[0]["feedback"]
+        assert "great job" in iters[0]["feedback"]
         assert iters[0]["suggestions"] == ["ship it"]
 
 
@@ -244,9 +315,7 @@ class TestBudget:
         cfg.daily_budget_usd = None
         cfg.max_iters = 2
         cfg.patience = 2
-        FakeRun(scores=[[5, 1] * 5] * 2).install(
-            monkeypatch, gen_cost=5.00, critic_cost=5.00
-        )
+        FakeRun(scores=[[5, 1] * 5] * 2).install(monkeypatch, gen_cost=5.00, critic_cost=5.00)
         result = orchestrator.run_loop_sync(cfg)
         # Both iters ran despite spending $20 — no cap.
         assert result.iterations == 2
@@ -282,7 +351,7 @@ class TestFeedbackFlow:
         reqs = run.generated_requests
         assert reqs[0].prior_html is None
         assert reqs[0].critic_feedback is None
-        assert reqs[1].critic_feedback == "f1"
+        assert "f1" in reqs[1].critic_feedback
         assert reqs[1].suggestions == ["s1"]
         assert reqs[1].prior_html is not None
 
@@ -308,9 +377,9 @@ class TestFeedbackFlow:
         reqs = run.generated_requests
         # Iter 2 evolves from iter 1 (the best so far) — unchanged behavior.
         assert "iter 1" in reqs[1].prior_html
-        assert reqs[1].critic_feedback == "f1"
+        assert "f1" in reqs[1].critic_feedback
         # Iter 3 must NOT evolve from the regressed iter 2: it re-seeds from
         # the best iteration's HTML and critique.
         assert "iter 1" in reqs[2].prior_html
-        assert reqs[2].critic_feedback == "f1"
+        assert "f1" in reqs[2].critic_feedback
         assert reqs[2].suggestions == ["s1"]

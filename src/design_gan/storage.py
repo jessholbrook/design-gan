@@ -5,10 +5,11 @@ from __future__ import annotations
 import json
 import sqlite3
 import time
+from collections.abc import Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Iterator
+from typing import Any
 
 SECONDS_PER_DAY = 86_400
 
@@ -27,6 +28,7 @@ CREATE TABLE IF NOT EXISTS runs (
     current_phase TEXT,
     current_phase_at REAL,
     total_cost_usd REAL NOT NULL DEFAULT 0.0,
+    evaluation_suite TEXT,        -- frozen JSON browser scenarios for design runs
     error TEXT
 );
 
@@ -45,6 +47,11 @@ CREATE TABLE IF NOT EXISTS iterations (
     artifacts_dir TEXT NOT NULL,
     cost_usd REAL NOT NULL DEFAULT 0.0,
     critic_breakdown TEXT,    -- JSON list of per-critic responses; NULL for single-critic
+    primary_score REAL,       -- task completion for v2 design runs
+    primary_metric TEXT,
+    promotion_eligible INTEGER NOT NULL DEFAULT 1,
+    guardrails TEXT,          -- JSON accessibility/correctness gate results
+    task_results TEXT,        -- JSON behavioral browser task results
     UNIQUE(run_id, iter)
 );
 
@@ -69,6 +76,11 @@ class IterationRecord:
     # Optional per-critic breakdown when the run used an ensemble. Each item:
     #   {"name": str, "sus": list[int], "feedback": str, "suggestions": list[str]}
     critic_breakdown: list[dict[str, Any]] | None = None
+    primary_score: float | None = None
+    primary_metric: str | None = None
+    promotion_eligible: bool = True
+    guardrails: dict[str, Any] | None = None
+    task_results: list[dict[str, Any]] | None = None
 
 
 class Storage:
@@ -88,6 +100,7 @@ class Storage:
             ("current_phase", "TEXT"),
             ("current_phase_at", "REAL"),
             ("total_cost_usd", "REAL NOT NULL DEFAULT 0.0"),
+            ("evaluation_suite", "TEXT"),
             ("error", "TEXT"),
             ("kind", "TEXT NOT NULL DEFAULT 'design'"),
         ):
@@ -99,6 +112,15 @@ class Storage:
             conn.execute("ALTER TABLE iterations ADD COLUMN cost_usd REAL NOT NULL DEFAULT 0.0")
         if "critic_breakdown" not in iter_cols:
             conn.execute("ALTER TABLE iterations ADD COLUMN critic_breakdown TEXT")
+        for col, ddl in (
+            ("primary_score", "REAL"),
+            ("primary_metric", "TEXT"),
+            ("promotion_eligible", "INTEGER NOT NULL DEFAULT 1"),
+            ("guardrails", "TEXT"),
+            ("task_results", "TEXT"),
+        ):
+            if col not in iter_cols:
+                conn.execute(f"ALTER TABLE iterations ADD COLUMN {col} {ddl}")
 
     @contextmanager
     def _conn(self) -> Iterator[sqlite3.Connection]:
@@ -116,11 +138,19 @@ class Storage:
         finally:
             conn.close()
 
-    def create_run(self, brief: str, model: str, kind: str = "design") -> int:
+    def create_run(
+        self,
+        brief: str,
+        model: str,
+        kind: str = "design",
+        evaluation_suite: list[dict[str, Any]] | None = None,
+    ) -> int:
+        suite_json = json.dumps(evaluation_suite) if evaluation_suite is not None else None
         with self._conn() as c:
             cur = c.execute(
-                "INSERT INTO runs(brief, model, kind, created_at) VALUES (?, ?, ?, ?)",
-                (brief, model, kind, time.time()),
+                "INSERT INTO runs(brief, model, kind, created_at, evaluation_suite) "
+                "VALUES (?, ?, ?, ?, ?)",
+                (brief, model, kind, time.time(), suite_json),
             )
             return cur.lastrowid
 
@@ -158,15 +188,18 @@ class Storage:
         breakdown_json = (
             json.dumps(rec.critic_breakdown) if rec.critic_breakdown is not None else None
         )
+        guardrails_json = json.dumps(rec.guardrails) if rec.guardrails is not None else None
+        task_results_json = json.dumps(rec.task_results) if rec.task_results is not None else None
         with self._conn() as c:
             c.execute(
                 """
                 INSERT INTO iterations(
                     run_id, iter, created_at, html, sus_score, axe_penalty,
                     composite_score, sus_answers, feedback, suggestions, artifacts_dir,
-                    cost_usd, critic_breakdown
+                    cost_usd, critic_breakdown, primary_score, primary_metric,
+                    promotion_eligible, guardrails, task_results
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     rec.run_id,
@@ -182,6 +215,11 @@ class Storage:
                     rec.artifacts_dir,
                     rec.cost_usd,
                     breakdown_json,
+                    rec.primary_score,
+                    rec.primary_metric,
+                    int(rec.promotion_eligible),
+                    guardrails_json,
+                    task_results_json,
                 ),
             )
             # Roll iteration cost up onto the parent run for cheap dashboard reads.
@@ -193,12 +231,18 @@ class Storage:
     def list_runs(self) -> list[dict[str, Any]]:
         with self._conn() as c:
             rows = c.execute("SELECT * FROM runs ORDER BY id DESC").fetchall()
-            return [dict(r) for r in rows]
+            return [self._decode_run(dict(r)) for r in rows]
 
     def get_run(self, run_id: int) -> dict[str, Any] | None:
         with self._conn() as c:
             row = c.execute("SELECT * FROM runs WHERE id=?", (run_id,)).fetchone()
-            return dict(row) if row else None
+            return self._decode_run(dict(row)) if row else None
+
+    @staticmethod
+    def _decode_run(run: dict[str, Any]) -> dict[str, Any]:
+        if run.get("evaluation_suite"):
+            run["evaluation_suite"] = json.loads(run["evaluation_suite"])
+        return run
 
     def iterations_for_run(self, run_id: int, after_iter: int = 0) -> list[dict[str, Any]]:
         with self._conn() as c:
@@ -213,6 +257,11 @@ class Storage:
                 d["suggestions"] = json.loads(d["suggestions"])
                 if d.get("critic_breakdown"):
                     d["critic_breakdown"] = json.loads(d["critic_breakdown"])
+                if d.get("guardrails"):
+                    d["guardrails"] = json.loads(d["guardrails"])
+                if d.get("task_results"):
+                    d["task_results"] = json.loads(d["task_results"])
+                d["promotion_eligible"] = bool(d.get("promotion_eligible", 1))
                 out.append(d)
             return out
 

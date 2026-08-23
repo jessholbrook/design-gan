@@ -1,4 +1,10 @@
-"""Scoring: SUS answers -> 0-100 score; composite blends SUS with objective penalties."""
+"""Product scoring and promotion policy.
+
+Design runs use browser-task completion as their one primary metric.  SUS is
+retained as a diagnostic, while accessibility and runtime correctness are hard
+promotion guardrails.  Conversation runs keep their existing CUS-minus-penalty
+score until they receive a domain-specific behavioral evaluator.
+"""
 
 from __future__ import annotations
 
@@ -9,9 +15,12 @@ from typing import Any
 @dataclass
 class Score:
     sus: float  # 0-100, pure SUS
-    axe_penalty: float  # 0-100, subtracted from composite
-    composite: float  # 0-100, blended
+    axe_penalty: float  # diagnostic for design; objective penalty for conversation
+    composite: float  # backward-compatible storage/viewer value; primary score for v2 design
     breakdown: dict[str, Any]
+    primary_metric: str = "legacy_composite"
+    promotion_eligible: bool = True
+    guardrails: dict[str, Any] | None = None
 
 
 # Impact weights for axe violations.
@@ -41,6 +50,7 @@ def axe_penalty(violations: list[dict[str, Any]]) -> float:
 
 
 def score(sus_answers: list[int], axe_violations: list[dict[str, Any]]) -> Score:
+    """Legacy SUS-minus-axe score retained for old callers and stored runs."""
     base = sus_score(sus_answers)
     penalty = axe_penalty(axe_violations)
     composite = max(0.0, min(100.0, base - penalty))
@@ -49,6 +59,64 @@ def score(sus_answers: list[int], axe_violations: list[dict[str, Any]]) -> Score
         axe_penalty=penalty,
         composite=round(composite, 2),
         breakdown={
+            "sus_answers": sus_answers,
+            "axe_violation_count": len(axe_violations),
+        },
+    )
+
+
+def design_score(
+    sus_answers: list[int],
+    axe_violations: list[dict[str, Any]],
+    *,
+    task_score: float,
+    task_results: list[dict[str, Any]],
+    axe_error: str | None,
+    console_errors: list[str],
+    evaluator_errors: list[str],
+) -> Score:
+    """Score a design candidate and apply its promotion guardrails.
+
+    The task completion rate is never blended with SUS or axe.  An iteration
+    may have a high task score and still be ineligible for promotion, which is
+    intentionally visible rather than hidden inside a weighted average.
+    """
+    diagnostic_sus = sus_score(sus_answers)
+    diagnostic_axe = axe_penalty(axe_violations)
+    blocking_impacts = {"critical", "serious"}
+    blocking_violations = [
+        {
+            "id": violation.get("id"),
+            "impact": violation.get("impact"),
+            "nodes": len(violation.get("nodes", [])),
+        }
+        for violation in axe_violations
+        if (violation.get("impact") or "").lower() in blocking_impacts
+    ]
+    accessibility_passed = axe_error is None and not blocking_violations
+    correctness_errors = [*console_errors, *evaluator_errors]
+    correctness_passed = not correctness_errors
+    guardrails = {
+        "accessibility": {
+            "passed": accessibility_passed,
+            "axe_error": axe_error,
+            "blocking_violations": blocking_violations,
+        },
+        "correctness": {
+            "passed": correctness_passed,
+            "errors": correctness_errors,
+        },
+    }
+    primary = max(0.0, min(100.0, float(task_score)))
+    return Score(
+        sus=diagnostic_sus,
+        axe_penalty=diagnostic_axe,
+        composite=round(primary, 2),
+        primary_metric="task_completion_rate",
+        promotion_eligible=accessibility_passed and correctness_passed,
+        guardrails=guardrails,
+        breakdown={
+            "task_results": task_results,
             "sus_answers": sus_answers,
             "axe_violation_count": len(axe_violations),
         },

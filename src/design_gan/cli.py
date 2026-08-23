@@ -37,7 +37,7 @@ def run(
     brief: str = typer.Argument(..., help="Describe the site the generator should build."),
     max_iters: int = typer.Option(15, help="Maximum generate/critique iterations."),
     patience: int = typer.Option(3, help="Stop after this many iters without improvement."),
-    tolerance: float = typer.Option(1.0, help="Min composite-score gain to count as progress."),
+    tolerance: float = typer.Option(1.0, help="Min primary-score gain to count as progress."),
     model: str = typer.Option(None, help="Override the Claude model ID."),
     runs_dir: Path = typer.Option(None, help="Where to store per-iteration artifacts."),
 ) -> None:
@@ -159,7 +159,7 @@ def export(
     out.write_text(rec["html"], encoding="utf-8")
     console.print(
         f"[green]Exported[/green] run {run_id} iter {rec['iter']} "
-        f"(composite {rec['composite_score']:.1f}) -> {out}"
+        f"(primary score {rec['composite_score']:.1f}) -> {out}"
     )
 
 

@@ -8,16 +8,15 @@ import html
 import json
 import logging
 import os
+from contextlib import asynccontextmanager
 from functools import lru_cache
 from pathlib import Path
-
-from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, Header, HTTPException
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, StreamingResponse
 from pydantic import BaseModel, Field
 
-from . import critic, orchestrator, storage
+from . import browser_evaluator, critic, orchestrator, storage
 
 
 def _runs_dir() -> Path:
@@ -48,9 +47,7 @@ def _daily_budget_usd() -> float | None:
 
 # Runs with no heartbeat for this long are presumed dead (machine restart,
 # OOM kill, etc.). Sweep clears them at boot and could be called periodically.
-ABANDONED_RUN_TIMEOUT_SECONDS = int(
-    os.environ.get("DESIGN_GAN_ABANDONED_TIMEOUT_S", "600")
-)
+ABANDONED_RUN_TIMEOUT_SECONDS = int(os.environ.get("DESIGN_GAN_ABANDONED_TIMEOUT_S", "600"))
 
 
 def _configured_critics() -> list[critic.CriticProfile] | None:
@@ -148,10 +145,10 @@ def _runs_sidebar(active_id: int | None) -> str:
         brief = (r["brief"] or "")[:60]
         score_txt = f"{r['best_score']:.0f}" if r["best_score"] is not None else "—"
         items.append(
-            f"""<a href="/runs/{r['id']}" class="side-item{active}">
-              <span class="side-id">#{r['id']}</span>
+            f"""<a href="/runs/{r["id"]}" class="side-item{active}">
+              <span class="side-id">#{r["id"]}</span>
               <span class="side-brief">{html.escape(brief)}</span>
-              <span class="side-score {_score_class(r['best_score'])}">{score_txt}</span>
+              <span class="side-score {_score_class(r["best_score"])}">{score_txt}</span>
             </a>"""
         )
     if not items:
@@ -166,12 +163,14 @@ def _new_run_form() -> str:
         '<label class="token-field">Access token'
         '<input type="password" name="token" autocomplete="off" '
         'placeholder="Required to start a run on this deployment" /></label>'
-        if gated else ""
+        if gated
+        else ""
     )
     gated_note = (
         '<p class="muted gated-note">Starting a run requires a shared token '
-        'on this deployment — ask the owner. Browsing existing runs is open.</p>'
-        if gated else ""
+        "on this deployment — ask the owner. Browsing existing runs is open.</p>"
+        if gated
+        else ""
     )
     return f"""<section class="card new-run">
   <h2>Start a new run</h2>
@@ -223,20 +222,18 @@ def _transcript_preview_html(run_id: int, it: int) -> str:
             f'<div class="bubble bubble-{role}">'
             f'<span class="bubble-role">{html.escape(role)}</span>'
             f'<span class="bubble-text">{html.escape(content)}</span>'
-            f'</div>'
+            f"</div>"
         )
-    return '<div class="transcript-preview">' + "".join(bubbles) + '</div>'
+    return '<div class="transcript-preview">' + "".join(bubbles) + "</div>"
 
 
 def _iter_card_html(run_id: int, it: dict, kind: str = "design") -> str:
-    suggestions = "".join(
-        f"<li>{html.escape(s)}</li>" for s in (it.get("suggestions") or [])
-    )
+    suggestions = "".join(f"<li>{html.escape(s)}</li>" for s in (it.get("suggestions") or []))
     if kind == "conversation":
         thumb = (
             f'<a href="/runs/{run_id}/iters/{it["iter"]}/transcript-view" '
             f'target="_blank" class="thumb thumb-transcript">'
-            f'{_transcript_preview_html(run_id, it["iter"])}'
+            f"{_transcript_preview_html(run_id, it['iter'])}"
             f"</a>"
         )
         stats = (
@@ -251,22 +248,37 @@ def _iter_card_html(run_id: int, it: dict, kind: str = "design") -> str:
             f'loading="lazy" alt="Iter {it["iter"]}" />'
             f"</a>"
         )
-        stats = (
-            f"<span>SUS <b>{it['sus_score']:.0f}</b></span>"
-            f"<span>a11y penalty <b>{it['axe_penalty']:.0f}</b></span>"
-        )
-    return f"""<article class="iter-card" data-iter="{it['iter']}">
+        if it.get("primary_metric") == "task_completion_rate":
+            gate = "eligible" if it.get("promotion_eligible") else "blocked"
+            stats = (
+                f"<span>tasks <b>{(it.get('primary_score') or 0):.0f}</b></span>"
+                f"<span>SUS diagnostic <b>{it['sus_score']:.0f}</b></span>"
+                f"<span>guardrails <b>{gate}</b></span>"
+            )
+        else:
+            stats = (
+                f"<span>SUS <b>{it['sus_score']:.0f}</b></span>"
+                f"<span>a11y penalty <b>{it['axe_penalty']:.0f}</b></span>"
+            )
+    blocked_class = (
+        " score-blocked"
+        if it.get("primary_metric") == "task_completion_rate" and not it.get("promotion_eligible")
+        else ""
+    )
+    return f"""<article class="iter-card" data-iter="{it["iter"]}"
+  data-score="{it["composite_score"]}" data-sus="{it["sus_score"]}"
+  data-eligible="{1 if it.get("promotion_eligible", True) else 0}">
   <header>
-    <span class="iter-num">#{it['iter']}</span>
-    <span class="badge {_score_class(it['composite_score'])}">
-      {it['composite_score']:.0f}
+    <span class="iter-num">#{it["iter"]}</span>
+    <span class="badge {_score_class(it["composite_score"])}{blocked_class}">
+      {it["composite_score"]:.0f}
     </span>
   </header>
   {thumb}
   <div class="stats">
     {stats}
   </div>
-  <p class="feedback">{html.escape(it['feedback'])}</p>
+  <p class="feedback">{html.escape(it["feedback"])}</p>
   <details>
     <summary>Suggestions</summary>
     <ul>{suggestions}</ul>
@@ -285,13 +297,13 @@ def index() -> str:
         score_txt = f"{r['best_score']:.0f}" if r["best_score"] is not None else "—"
         brief = (r["brief"] or "")[:140]
         recent_cards.append(
-            f"""<a href="/runs/{r['id']}" class="run-card">
+            f"""<a href="/runs/{r["id"]}" class="run-card">
               <div class="run-card-head">
-                <span class="run-id">#{r['id']}</span>
-                {_status_badge(r['status'])}
+                <span class="run-id">#{r["id"]}</span>
+                {_status_badge(r["status"])}
               </div>
               <div class="run-brief">{html.escape(brief)}</div>
-              <div class="run-score {_score_class(r['best_score'])}">{score_txt}</div>
+              <div class="run-score {_score_class(r["best_score"])}">{score_txt}</div>
             </a>"""
         )
     recent = (
@@ -320,6 +332,19 @@ def run_detail(run_id: int) -> str:
 
     best_score = run.get("best_score")
     best_score_txt = f"{best_score:.0f}" if best_score is not None else "—"
+    v2_design = kind == "design" and bool(run.get("evaluation_suite"))
+    best_score_label = "best task score" if v2_design else "best score"
+    suite_html = ""
+    if v2_design:
+        tasks = "".join(
+            f"<li>{html.escape(task.get('name') or task.get('id') or 'task')}: "
+            f"{html.escape(task.get('instruction') or '')}</li>"
+            for task in run["evaluation_suite"]
+        )
+        suite_html = (
+            '<details class="run-evaluation-suite"><summary>Frozen browser tasks</summary>'
+            f"<ul>{tasks}</ul></details>"
+        )
     cards = "".join(_iter_card_html(run_id, it, kind=kind) for it in iters)
 
     running = run["status"] == "running"
@@ -331,27 +356,21 @@ def run_detail(run_id: int) -> str:
     cur_iter = run.get("current_iter")
     cur_phase = run.get("current_phase")
     progress_display = "flex" if running and cur_phase else "none"
-    progress_text = (
-        f"iter {cur_iter} · {cur_phase}" if (running and cur_iter and cur_phase) else ""
-    )
+    progress_text = f"iter {cur_iter} · {cur_phase}" if (running and cur_iter and cur_phase) else ""
     error_html = (
         f'<p class="run-error">Last error: {html.escape(run["error"])}</p>'
         if run.get("error")
         else ""
     )
 
-    scrub_link = (
-        f'<a class="scrub-link" href="/runs/{run_id}/scrub">Scrub ▸</a>'
-        if iters
-        else ""
-    )
+    scrub_link = f'<a class="scrub-link" href="/runs/{run_id}/scrub">Scrub ▸</a>' if iters else ""
 
     body = f"""<main class="layout">
   {_runs_sidebar(run_id)}
   <section class="content">
     <section class="card run-header">
       <div class="run-header-top">
-        <h1>Run #{run_id} {_status_badge(run['status'])}
+        <h1>Run #{run_id} {_status_badge(run["status"])}
           <span id="progress-indicator" class="progress" style="display:{progress_display}">
             <span class="spinner"></span>
             <span id="progress-text">{html.escape(progress_text)}</span>
@@ -360,14 +379,15 @@ def run_detail(run_id: int) -> str:
         </h1>
         <div class="run-stats">
           <div><span class="muted">best iter</span>
-            <b id="stat-best-iter">{run.get('best_iter') or '—'}</b></div>
-          <div><span class="muted">best score</span>
+            <b id="stat-best-iter">{run.get("best_iter") or "—"}</b></div>
+          <div><span class="muted">{best_score_label}</span>
             <b id="stat-best-score" class="{_score_class(best_score)}">{best_score_txt}</b></div>
           <div><span class="muted">iterations</span>
             <b id="stat-iter-count">{len(iters)}</b></div>
         </div>
       </div>
-      <p class="brief">{html.escape(run['brief'])}</p>
+      <p class="brief">{html.escape(run["brief"])}</p>
+      {suite_html}
       {error_html}
       <div class="chart-wrap">
         <svg id="score-chart" viewBox="0 0 800 220" preserveAspectRatio="none"></svg>
@@ -390,10 +410,7 @@ def scrub(run_id: int) -> str:
         raise HTTPException(404, "run not found")
     kind = run.get("kind") or "design"
     brief = (run["brief"] or "")[:120]
-    attrs = (
-        f' data-scrub-run-id="{run_id}"'
-        f' data-kind="{html.escape(kind)}"'
-    )
+    attrs = f' data-scrub-run-id="{run_id}" data-kind="{html.escape(kind)}"'
     body = f"""<main class="scrub">
   <div class="scrub-head">
     <div class="scrub-head-left">
@@ -491,14 +508,14 @@ def transcript_view(run_id: int, it: int) -> str:
         )
     meta = (
         f'<div class="transcript-meta muted">'
-        f'turns: {turns_taken} · '
-        f'satisfied: {"yes" if satisfied else "no"} · '
+        f"turns: {turns_taken} · "
+        f"satisfied: {'yes' if satisfied else 'no'} · "
         f'<a href="/runs/{run_id}">back to run #{run_id}</a>'
         f"</div>"
     )
     body = (
         f'<main class="transcript-full">'
-        f'<h1>Run {run_id} · iter {it} · transcript</h1>'
+        f"<h1>Run {run_id} · iter {it} · transcript</h1>"
         f"{meta}"
         f'<div class="transcript-body">{"".join(bubbles)}</div>'
         f"</main>"
@@ -554,15 +571,17 @@ def api_config() -> JSONResponse:
     budget = _daily_budget_usd()
     used = _store().cost_usd_last_24h() if budget is not None else 0.0
     critics = _configured_critics()
-    return JSONResponse({
-        "requires_token": _required_start_token() is not None,
-        "daily_budget_usd": budget,
-        "budget_used_24h_usd": round(used, 4),
-        "budget_remaining_usd": (
-            round(max(0.0, budget - used), 4) if budget is not None else None
-        ),
-        "critics": [c.name for c in critics] if critics else ["Usability"],
-    })
+    return JSONResponse(
+        {
+            "requires_token": _required_start_token() is not None,
+            "daily_budget_usd": budget,
+            "budget_used_24h_usd": round(used, 4),
+            "budget_remaining_usd": (
+                round(max(0.0, budget - used), 4) if budget is not None else None
+            ),
+            "critics": [c.name for c in critics] if critics else ["Usability"],
+        }
+    )
 
 
 @app.post("/api/runs")
@@ -612,7 +631,17 @@ async def start_run(
         max_conversation_turns=req.max_conversation_turns,
     )
     # Pre-create the run so we can return its id immediately.
-    run_id = _store().create_run(req.brief, model, kind=req.kind)
+    suite = (
+        [task.to_dict() for task in browser_evaluator.DEFAULT_DESIGN_TASKS]
+        if req.kind == "design"
+        else None
+    )
+    run_id = _store().create_run(
+        req.brief,
+        model,
+        kind=req.kind,
+        evaluation_suite=suite,
+    )
     entry = (
         orchestrator.run_conversation_loop_sync
         if req.kind == "conversation"
@@ -660,9 +689,7 @@ async def stream_run(run_id: int, since: int = 0) -> StreamingResponse:
                 yield _sse("error", {"message": "run not found"})
                 return
             # Newly completed iterations.
-            new = await asyncio.to_thread(
-                store.iterations_for_run, run_id, last_iter
-            )
+            new = await asyncio.to_thread(store.iterations_for_run, run_id, last_iter)
             for it in new:
                 yield _sse("iteration", {"run_id": run_id, "iter": it})
                 last_iter = it["iter"]
