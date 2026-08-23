@@ -18,7 +18,9 @@ Output contract:
 
 Design priorities (in order):
 1. Clarity of purpose: a visitor should understand what the site is for within 2 seconds.
-2. Usability: primary actions are obvious, reachable, and labeled.
+2. Task completion: the primary action is obvious, reachable, labeled, and actually works. Mark
+   the single main control with `data-primary-action`; activating it must navigate, scroll to
+   relevant content, open a dialog/window, or visibly update the page without runtime errors.
 3. Accessibility: semantic HTML, sufficient contrast, keyboard navigation, alt text.
 4. Visual polish: coherent typography, spacing, and color system.
 """

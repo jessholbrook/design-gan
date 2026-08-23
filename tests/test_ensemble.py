@@ -7,9 +7,9 @@ from pathlib import Path
 import pytest
 
 from design_gan.critic import (
-    SUSResponse,
     TRIO,
     USABILITY_CRITIC,
+    SUSResponse,
     _aggregate,
     _dedupe_suggestions,
 )
@@ -67,9 +67,7 @@ class TestDedupe:
 
 class TestAggregate:
     def _r(self, sus, feedback="f", suggestions=None):
-        return SUSResponse(
-            sus=sus, feedback=feedback, suggestions=suggestions or ["s"]
-        )
+        return SUSResponse(sus=sus, feedback=feedback, suggestions=suggestions or ["s"])
 
     def test_single_response_pass_through(self):
         r = self._r([3] * 10)
@@ -128,9 +126,9 @@ class TestOrchestratorEnsemble:
     def test_ensemble_persists_per_critic_breakdown(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ):
+        from design_gan import browser_evaluator, orchestrator
         from design_gan import critic as critic_mod
         from design_gan import generator as generator_mod
-        from design_gan import orchestrator
         from design_gan import renderer as renderer_mod
         from design_gan.renderer import RenderResult
         from design_gan.storage import Storage
@@ -138,9 +136,9 @@ class TestOrchestratorEnsemble:
         # Track how many critic calls happen; fake them in parallel.
         call_count = {"n": 0}
         scripted_scores = {
-            "Usability": [3, 3, 3, 3, 3, 3, 3, 3, 3, 3],          # SUS 50
-            "Visual design": [4, 2, 4, 2, 4, 2, 4, 2, 4, 2],       # SUS 75
-            "Content & clarity": [5, 1, 5, 1, 5, 1, 5, 1, 5, 1],   # SUS 100
+            "Usability": [3, 3, 3, 3, 3, 3, 3, 3, 3, 3],  # SUS 50
+            "Visual design": [4, 2, 4, 2, 4, 2, 4, 2, 4, 2],  # SUS 75
+            "Content & clarity": [5, 1, 5, 1, 5, 1, 5, 1, 5, 1],  # SUS 100
         }
 
         async def fake_generate(model, req):
@@ -154,13 +152,29 @@ class TestOrchestratorEnsemble:
                 console_errors=[],
             )
 
+        async def fake_evaluate(html, *, tasks, viewport=(1280, 800)):
+            return browser_evaluator.EvaluationResult(
+                score=100.0,
+                tasks=[
+                    browser_evaluator.TaskResult(
+                        task_id="primary-action",
+                        name="Primary action works",
+                        instruction="activate it",
+                        passed=True,
+                        target="Start",
+                        observed=["visible content changed"],
+                    )
+                ],
+            )
+
         def fake_write_artifacts(render, out_dir):
             out_dir.mkdir(parents=True, exist_ok=True)
             (out_dir / "screenshot.png").write_bytes(b"\x89PNG\r\n\x1a\nfake")
             return {"screenshot": out_dir / "screenshot.png"}
 
-        async def fake_critique_ensemble(model, profiles, *, screenshot_path,
-                                         dom_html, axe_violations, brief):
+        async def fake_critique_ensemble(
+            model, profiles, *, screenshot_path, dom_html, axe_violations, brief
+        ):
             call_count["n"] += 1
             responses = [
                 critic_mod.SUSResponse(
@@ -172,8 +186,12 @@ class TestOrchestratorEnsemble:
             ]
             aggregated = critic_mod._aggregate(profiles, responses)
             breakdown = [
-                {"name": p.name, "sus": list(r.sus), "feedback": r.feedback,
-                 "suggestions": list(r.suggestions)}
+                {
+                    "name": p.name,
+                    "sus": list(r.sus),
+                    "feedback": r.feedback,
+                    "suggestions": list(r.suggestions),
+                }
                 for p, r in zip(profiles, responses)
             ]
             return aggregated, breakdown, 0.05
@@ -181,12 +199,15 @@ class TestOrchestratorEnsemble:
         monkeypatch.setattr(generator_mod, "generate", fake_generate)
         monkeypatch.setattr(renderer_mod, "render", fake_render)
         monkeypatch.setattr(renderer_mod, "write_artifacts", fake_write_artifacts)
+        monkeypatch.setattr(browser_evaluator, "evaluate", fake_evaluate)
         monkeypatch.setattr(critic_mod, "critique_ensemble", fake_critique_ensemble)
 
         cfg = orchestrator.LoopConfig(
-            brief="B", runs_dir=tmp_path,
+            brief="B",
+            runs_dir=tmp_path,
             db_path=tmp_path / "design-gan.sqlite",
-            max_iters=1, patience=1,
+            max_iters=1,
+            patience=1,
             critics=list(critic_mod.TRIO),
         )
         result = orchestrator.run_loop_sync(cfg)
@@ -208,9 +229,9 @@ class TestOrchestratorEnsemble:
     ):
         """Regression: when cfg.critics is None, orchestrator must call
         critic.critique (not ensemble) and leave critic_breakdown null."""
+        from design_gan import browser_evaluator, orchestrator
         from design_gan import critic as critic_mod
         from design_gan import generator as generator_mod
-        from design_gan import orchestrator
         from design_gan import renderer as renderer_mod
         from design_gan.renderer import RenderResult
         from design_gan.storage import Storage
@@ -220,8 +241,25 @@ class TestOrchestratorEnsemble:
 
         async def fake_render(html, viewport=(1280, 800)):
             return RenderResult(
-                screenshot_png=b"\x89PNG", dom_html="<html></html>",
-                axe_violations=[], console_errors=[],
+                screenshot_png=b"\x89PNG",
+                dom_html="<html></html>",
+                axe_violations=[],
+                console_errors=[],
+            )
+
+        async def fake_evaluate(html, *, tasks, viewport=(1280, 800)):
+            return browser_evaluator.EvaluationResult(
+                score=100.0,
+                tasks=[
+                    browser_evaluator.TaskResult(
+                        task_id="primary-action",
+                        name="Primary action works",
+                        instruction="activate it",
+                        passed=True,
+                        target="Start",
+                        observed=["visible content changed"],
+                    )
+                ],
             )
 
         def fake_write_artifacts(render, out_dir):
@@ -235,25 +273,26 @@ class TestOrchestratorEnsemble:
             ensemble_calls["n"] += 1
             raise AssertionError("ensemble should not run when cfg.critics is None")
 
-        async def fake_critique(model, *, screenshot_path, dom_html,
-                                axe_violations, brief):
+        async def fake_critique(model, *, screenshot_path, dom_html, axe_violations, brief):
             return (
-                critic_mod.SUSResponse(
-                    sus=[3] * 10, feedback="ok", suggestions=["x"]
-                ),
+                critic_mod.SUSResponse(sus=[3] * 10, feedback="ok", suggestions=["x"]),
                 0.01,
             )
 
         monkeypatch.setattr(generator_mod, "generate", fake_generate)
         monkeypatch.setattr(renderer_mod, "render", fake_render)
         monkeypatch.setattr(renderer_mod, "write_artifacts", fake_write_artifacts)
+        monkeypatch.setattr(browser_evaluator, "evaluate", fake_evaluate)
         monkeypatch.setattr(critic_mod, "critique", fake_critique)
         monkeypatch.setattr(critic_mod, "critique_ensemble", fake_ensemble)
 
         cfg = orchestrator.LoopConfig(
-            brief="B", runs_dir=tmp_path,
+            brief="B",
+            runs_dir=tmp_path,
             db_path=tmp_path / "design-gan.sqlite",
-            max_iters=1, patience=1, critics=None,
+            max_iters=1,
+            patience=1,
+            critics=None,
         )
         result = orchestrator.run_loop_sync(cfg)
         assert ensemble_calls["n"] == 0
@@ -272,18 +311,18 @@ class TestViewerCriticsFlag:
         monkeypatch.setenv("DESIGN_GAN_RUNS_DIR", str(tmp_path))
         monkeypatch.setenv("DESIGN_GAN_CRITICS", "trio")
         from fastapi.testclient import TestClient
+
         from design_gan import viewer
 
         c = TestClient(viewer.app)
         body = c.get("/api/config").json()
         assert body["critics"] == ["Usability", "Visual design", "Content & clarity"]
 
-    def test_config_default_is_solo(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-    ):
+    def test_config_default_is_solo(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
         monkeypatch.setenv("DESIGN_GAN_RUNS_DIR", str(tmp_path))
         monkeypatch.delenv("DESIGN_GAN_CRITICS", raising=False)
         from fastapi.testclient import TestClient
+
         from design_gan import viewer
 
         c = TestClient(viewer.app)

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import pytest
 
-from design_gan.scorer import axe_penalty, score, sus_score
+from design_gan.scorer import axe_penalty, design_score, score, sus_score
 
 
 class TestSusScore:
@@ -95,3 +95,56 @@ class TestScore:
         result = score([3] * 10, [{"impact": "minor"}])
         assert result.breakdown["sus_answers"] == [3] * 10
         assert result.breakdown["axe_violation_count"] == 1
+
+
+class TestDesignScore:
+    def test_task_completion_is_primary_and_sus_is_diagnostic(self):
+        low_sus = design_score(
+            [1, 5] * 5,
+            [],
+            task_score=75,
+            task_results=[],
+            axe_error=None,
+            console_errors=[],
+            evaluator_errors=[],
+        )
+        high_sus = design_score(
+            [5, 1] * 5,
+            [],
+            task_score=75,
+            task_results=[],
+            axe_error=None,
+            console_errors=[],
+            evaluator_errors=[],
+        )
+        assert low_sus.composite == high_sus.composite == 75.0
+        assert low_sus.sus == 0.0
+        assert high_sus.sus == 100.0
+        assert low_sus.primary_metric == "task_completion_rate"
+
+    def test_serious_accessibility_violation_blocks_promotion(self):
+        result = design_score(
+            [5, 1] * 5,
+            [{"id": "contrast", "impact": "serious", "nodes": [{}]}],
+            task_score=100,
+            task_results=[],
+            axe_error=None,
+            console_errors=[],
+            evaluator_errors=[],
+        )
+        assert result.composite == 100.0
+        assert result.promotion_eligible is False
+        assert result.guardrails["accessibility"]["passed"] is False
+
+    def test_runtime_error_blocks_promotion(self):
+        result = design_score(
+            [3] * 10,
+            [],
+            task_score=100,
+            task_results=[],
+            axe_error=None,
+            console_errors=["boom"],
+            evaluator_errors=[],
+        )
+        assert result.promotion_eligible is False
+        assert result.guardrails["correctness"]["errors"] == ["boom"]
