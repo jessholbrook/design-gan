@@ -46,6 +46,9 @@ async def render(html: str, viewport: tuple[int, int] = (1280, 800)) -> RenderRe
             context = await browser.new_context(
                 viewport={"width": viewport[0], "height": viewport[1]},
             )
+            # Static policy validation explains common boundary violations;
+            # this runtime boundary blocks obfuscated or constructed requests.
+            await context.route("**/*", lambda route: route.abort())
             page = await context.new_page()
             page.on(
                 "console",

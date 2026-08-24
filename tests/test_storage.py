@@ -71,10 +71,19 @@ class TestInitAndSchema:
         with sqlite3.connect(store.db_path) as c:
             run_cols = {row[1] for row in c.execute("PRAGMA table_info(runs)")}
             iter_cols = {row[1] for row in c.execute("PRAGMA table_info(iterations)")}
-        assert "evaluation_suite" in run_cols
-        assert {"primary_score", "promotion_eligible", "guardrails", "task_results"}.issubset(
-            iter_cols
+        assert {"domain", "evaluation_suite", "evaluation_plan", "artifact_policy"}.issubset(
+            run_cols
         )
+        assert {
+            "primary_score",
+            "promotion_eligible",
+            "guardrails",
+            "task_results",
+            "artifact_validation",
+            "parent_iter",
+            "promoted",
+            "promotion_p_value",
+        }.issubset(iter_cols)
 
 
 class TestMigration:
@@ -108,12 +117,75 @@ class TestMigration:
         Storage(store.db_path)
         Storage(store.db_path)
 
+    def test_migrated_v2_history_only_marks_recorded_best_as_promoted(self, tmp_path: Path):
+        db = tmp_path / "old-v2.sqlite"
+        with sqlite3.connect(db) as c:
+            c.executescript(
+                """
+                CREATE TABLE runs (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT, brief TEXT NOT NULL,
+                    model TEXT NOT NULL, kind TEXT NOT NULL DEFAULT 'design',
+                    created_at REAL NOT NULL, ended_at REAL, best_iter INTEGER,
+                    best_score REAL, status TEXT NOT NULL DEFAULT 'running',
+                    current_iter INTEGER, current_phase TEXT, current_phase_at REAL,
+                    total_cost_usd REAL NOT NULL DEFAULT 0.0,
+                    evaluation_suite TEXT, error TEXT
+                );
+                CREATE TABLE iterations (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT, run_id INTEGER NOT NULL,
+                    iter INTEGER NOT NULL, created_at REAL NOT NULL, html TEXT NOT NULL,
+                    sus_score REAL NOT NULL, axe_penalty REAL NOT NULL,
+                    composite_score REAL NOT NULL, sus_answers TEXT NOT NULL,
+                    feedback TEXT NOT NULL, suggestions TEXT NOT NULL,
+                    artifacts_dir TEXT NOT NULL, cost_usd REAL NOT NULL DEFAULT 0.0,
+                    critic_breakdown TEXT, primary_score REAL, primary_metric TEXT,
+                    promotion_eligible INTEGER NOT NULL DEFAULT 1, guardrails TEXT,
+                    task_results TEXT, UNIQUE(run_id, iter)
+                );
+                INSERT INTO runs(
+                    brief, model, created_at, ended_at, best_iter, best_score, status
+                ) VALUES ('b', 'm', 0.0, 1.0, 2, 100.0, 'converged');
+                INSERT INTO iterations(
+                    run_id, iter, created_at, html, sus_score, axe_penalty,
+                    composite_score, sus_answers, feedback, suggestions,
+                    artifacts_dir, primary_score, primary_metric
+                ) VALUES
+                    (1, 1, 0.0, '<html></html>', 50, 0, 0, '[]', 'f', '[]', '/tmp',
+                     0, 'task_completion_rate'),
+                    (1, 2, 1.0, '<html></html>', 50, 0, 100, '[]', 'f', '[]', '/tmp',
+                     100, 'task_completion_rate');
+                """
+            )
+
+        migrated = Storage(db).iterations_for_run(1)
+
+        assert [item["promoted"] for item in migrated] == [False, True]
+        assert [item["promotion_reason"] for item in migrated] == [
+            "legacy_not_selected",
+            "legacy_best_candidate",
+        ]
+
 
 class TestRuns:
     def test_frozen_evaluation_suite_roundtrips(self, store: Storage):
         suite = [{"id": "primary-action", "name": "Primary action works"}]
         rid = store.create_run("b", "m", evaluation_suite=suite)
         assert store.get_run(rid)["evaluation_suite"] == suite
+
+    def test_run_policy_contracts_roundtrip(self, store: Storage):
+        plan = {"domain": "landing-page", "trials_per_task": 6}
+        policy = {"kind": "standalone-html", "version": 1}
+        rid = store.create_run(
+            "b",
+            "m",
+            domain="landing-page",
+            evaluation_plan=plan,
+            artifact_policy=policy,
+        )
+        run = store.get_run(rid)
+        assert run["domain"] == "landing-page"
+        assert run["evaluation_plan"] == plan
+        assert run["artifact_policy"] == policy
 
     def test_create_then_list(self, store: Storage):
         store.create_run("brief one", "model-a")
@@ -183,12 +255,26 @@ class TestIterations:
         rec.promotion_eligible = False
         rec.guardrails = {"accessibility": {"passed": False}}
         rec.task_results = [{"task_id": "primary-action", "passed": True}]
+        rec.artifact_validation = {"passed": True, "violations": []}
+        rec.parent_iter = 2
+        rec.promoted = False
+        rec.promotion_reason = "not_significant"
+        rec.promotion_effect = 16.67
+        rec.promotion_p_value = 0.0625
+        rec.promotion_comparable_trials = 6
+        rec.promotion_wins = 4
+        rec.promotion_losses = 0
         store.save_iteration(rec)
         saved = store.iterations_for_run(rid)[0]
         assert saved["primary_score"] == 100.0
         assert saved["promotion_eligible"] is False
         assert saved["guardrails"]["accessibility"]["passed"] is False
         assert saved["task_results"][0]["passed"] is True
+        assert saved["artifact_validation"]["passed"] is True
+        assert saved["parent_iter"] == 2
+        assert saved["promoted"] is False
+        assert saved["promotion_reason"] == "not_significant"
+        assert saved["promotion_p_value"] == pytest.approx(0.0625)
 
     def test_save_and_list(self, store: Storage):
         rid = store.create_run("b", "m")

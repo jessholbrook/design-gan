@@ -28,7 +28,10 @@ CREATE TABLE IF NOT EXISTS runs (
     current_phase TEXT,
     current_phase_at REAL,
     total_cost_usd REAL NOT NULL DEFAULT 0.0,
+    domain TEXT,
     evaluation_suite TEXT,        -- frozen JSON browser scenarios for design runs
+    evaluation_plan TEXT,         -- versioned frozen evaluator + promotion policy
+    artifact_policy TEXT,         -- versioned mutable-artifact boundary
     error TEXT
 );
 
@@ -52,6 +55,15 @@ CREATE TABLE IF NOT EXISTS iterations (
     promotion_eligible INTEGER NOT NULL DEFAULT 1,
     guardrails TEXT,          -- JSON accessibility/correctness gate results
     task_results TEXT,        -- JSON behavioral browser task results
+    artifact_validation TEXT,
+    parent_iter INTEGER,
+    promoted INTEGER NOT NULL DEFAULT 1,
+    promotion_reason TEXT,
+    promotion_effect REAL,
+    promotion_p_value REAL,
+    promotion_comparable_trials INTEGER NOT NULL DEFAULT 0,
+    promotion_wins INTEGER NOT NULL DEFAULT 0,
+    promotion_losses INTEGER NOT NULL DEFAULT 0,
     UNIQUE(run_id, iter)
 );
 
@@ -81,6 +93,15 @@ class IterationRecord:
     promotion_eligible: bool = True
     guardrails: dict[str, Any] | None = None
     task_results: list[dict[str, Any]] | None = None
+    artifact_validation: dict[str, Any] | None = None
+    parent_iter: int | None = None
+    promoted: bool = True
+    promotion_reason: str | None = None
+    promotion_effect: float | None = None
+    promotion_p_value: float | None = None
+    promotion_comparable_trials: int = 0
+    promotion_wins: int = 0
+    promotion_losses: int = 0
 
 
 class Storage:
@@ -100,7 +121,10 @@ class Storage:
             ("current_phase", "TEXT"),
             ("current_phase_at", "REAL"),
             ("total_cost_usd", "REAL NOT NULL DEFAULT 0.0"),
+            ("domain", "TEXT"),
             ("evaluation_suite", "TEXT"),
+            ("evaluation_plan", "TEXT"),
+            ("artifact_policy", "TEXT"),
             ("error", "TEXT"),
             ("kind", "TEXT NOT NULL DEFAULT 'design'"),
         ):
@@ -108,6 +132,7 @@ class Storage:
                 conn.execute(f"ALTER TABLE runs ADD COLUMN {col} {ddl}")
 
         iter_cols = {row["name"] for row in conn.execute("PRAGMA table_info(iterations)")}
+        promoted_added = "promoted" not in iter_cols
         if "cost_usd" not in iter_cols:
             conn.execute("ALTER TABLE iterations ADD COLUMN cost_usd REAL NOT NULL DEFAULT 0.0")
         if "critic_breakdown" not in iter_cols:
@@ -118,9 +143,41 @@ class Storage:
             ("promotion_eligible", "INTEGER NOT NULL DEFAULT 1"),
             ("guardrails", "TEXT"),
             ("task_results", "TEXT"),
+            ("artifact_validation", "TEXT"),
+            ("parent_iter", "INTEGER"),
+            ("promoted", "INTEGER NOT NULL DEFAULT 1"),
+            ("promotion_reason", "TEXT"),
+            ("promotion_effect", "REAL"),
+            ("promotion_p_value", "REAL"),
+            ("promotion_comparable_trials", "INTEGER NOT NULL DEFAULT 0"),
+            ("promotion_wins", "INTEGER NOT NULL DEFAULT 0"),
+            ("promotion_losses", "INTEGER NOT NULL DEFAULT 0"),
         ):
             if col not in iter_cols:
                 conn.execute(f"ALTER TABLE iterations ADD COLUMN {col} {ddl}")
+
+        if promoted_added:
+            # v2 milestone-one databases predate explicit promotion decisions.
+            # Preserve their visible best candidate without labeling every
+            # historical proposal as promoted.
+            conn.execute(
+                """
+                UPDATE iterations
+                SET promoted = CASE
+                    WHEN iter = (
+                        SELECT runs.best_iter FROM runs WHERE runs.id = iterations.run_id
+                    ) THEN 1
+                    ELSE 0
+                END,
+                promotion_reason = CASE
+                    WHEN iter = (
+                        SELECT runs.best_iter FROM runs WHERE runs.id = iterations.run_id
+                    ) THEN 'legacy_best_candidate'
+                    ELSE 'legacy_not_selected'
+                END
+                WHERE primary_metric = 'task_completion_rate'
+                """
+            )
 
     @contextmanager
     def _conn(self) -> Iterator[sqlite3.Connection]:
@@ -144,13 +201,18 @@ class Storage:
         model: str,
         kind: str = "design",
         evaluation_suite: list[dict[str, Any]] | None = None,
+        evaluation_plan: dict[str, Any] | None = None,
+        artifact_policy: dict[str, Any] | None = None,
+        domain: str | None = None,
     ) -> int:
         suite_json = json.dumps(evaluation_suite) if evaluation_suite is not None else None
+        plan_json = json.dumps(evaluation_plan) if evaluation_plan is not None else None
+        policy_json = json.dumps(artifact_policy) if artifact_policy is not None else None
         with self._conn() as c:
             cur = c.execute(
-                "INSERT INTO runs(brief, model, kind, created_at, evaluation_suite) "
-                "VALUES (?, ?, ?, ?, ?)",
-                (brief, model, kind, time.time(), suite_json),
+                "INSERT INTO runs(brief, model, kind, created_at, domain, evaluation_suite, "
+                "evaluation_plan, artifact_policy) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                (brief, model, kind, time.time(), domain, suite_json, plan_json, policy_json),
             )
             return cur.lastrowid
 
@@ -190,6 +252,9 @@ class Storage:
         )
         guardrails_json = json.dumps(rec.guardrails) if rec.guardrails is not None else None
         task_results_json = json.dumps(rec.task_results) if rec.task_results is not None else None
+        artifact_validation_json = (
+            json.dumps(rec.artifact_validation) if rec.artifact_validation is not None else None
+        )
         with self._conn() as c:
             c.execute(
                 """
@@ -198,8 +263,12 @@ class Storage:
                     composite_score, sus_answers, feedback, suggestions, artifacts_dir,
                     cost_usd, critic_breakdown, primary_score, primary_metric,
                     promotion_eligible, guardrails, task_results
+                    , artifact_validation, parent_iter, promoted, promotion_reason,
+                    promotion_effect, promotion_p_value, promotion_comparable_trials,
+                    promotion_wins, promotion_losses
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
+                        ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     rec.run_id,
@@ -220,6 +289,15 @@ class Storage:
                     int(rec.promotion_eligible),
                     guardrails_json,
                     task_results_json,
+                    artifact_validation_json,
+                    rec.parent_iter,
+                    int(rec.promoted),
+                    rec.promotion_reason,
+                    rec.promotion_effect,
+                    rec.promotion_p_value,
+                    rec.promotion_comparable_trials,
+                    rec.promotion_wins,
+                    rec.promotion_losses,
                 ),
             )
             # Roll iteration cost up onto the parent run for cheap dashboard reads.
@@ -240,8 +318,9 @@ class Storage:
 
     @staticmethod
     def _decode_run(run: dict[str, Any]) -> dict[str, Any]:
-        if run.get("evaluation_suite"):
-            run["evaluation_suite"] = json.loads(run["evaluation_suite"])
+        for key in ("evaluation_suite", "evaluation_plan", "artifact_policy"):
+            if run.get(key):
+                run[key] = json.loads(run[key])
         return run
 
     def iterations_for_run(self, run_id: int, after_iter: int = 0) -> list[dict[str, Any]]:
@@ -261,7 +340,10 @@ class Storage:
                     d["guardrails"] = json.loads(d["guardrails"])
                 if d.get("task_results"):
                     d["task_results"] = json.loads(d["task_results"])
+                if d.get("artifact_validation"):
+                    d["artifact_validation"] = json.loads(d["artifact_validation"])
                 d["promotion_eligible"] = bool(d.get("promotion_eligible", 1))
+                d["promoted"] = bool(d.get("promoted", 1))
                 out.append(d)
             return out
 
