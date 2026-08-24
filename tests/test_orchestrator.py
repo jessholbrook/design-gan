@@ -30,6 +30,7 @@ class FakeRun:
         feedbacks: list[str] | None = None,
         suggestions: list[list[str]] | None = None,
         task_scores: list[float] | None = None,
+        htmls: list[str] | None = None,
         fail_on: set[int] | None = None,
         fail_phase: str = "generate",
     ):
@@ -37,6 +38,7 @@ class FakeRun:
         self.feedbacks = feedbacks or ["feedback"] * len(scores)
         self.suggestions = suggestions or [["s1"]] * len(scores)
         self.task_scores = task_scores
+        self.htmls = htmls
         self.fail_on = fail_on or set()
         self.fail_phase = fail_phase
         self.iter = 0
@@ -55,10 +57,12 @@ class FakeRun:
             self.generated_requests.append(req)
             if self.iter in self.fail_on and self.fail_phase == "generate":
                 raise RuntimeError(f"boom generate iter {self.iter}")
-            return (
-                f"<!doctype html><html><body>iter {self.iter}</body></html>",
-                gen_cost,
+            html = (
+                self.htmls[self.iter - 1]
+                if self.htmls is not None
+                else f"<!doctype html><html><body>iter {self.iter}</body></html>"
             )
+            return html, gen_cost
 
         async def fake_render(html, viewport=(1280, 800)):
             if self.iter in self.fail_on and self.fail_phase == "render":
@@ -70,12 +74,13 @@ class FakeRun:
                 console_errors=[],
             )
 
-        async def fake_evaluate(html, *, tasks, viewport=(1280, 800)):
+        async def fake_evaluate(html, *, tasks, viewport=(1280, 800), trials_per_task=1):
             value = (
                 self.task_scores[self.iter - 1]
                 if self.task_scores is not None
                 else scorer.sus_score(self.scores[self.iter - 1])
             )
+            passed_trials = round(value * trials_per_task / 100)
             return browser_evaluator.EvaluationResult(
                 score=value,
                 tasks=[
@@ -83,10 +88,12 @@ class FakeRun:
                         task_id="primary-action",
                         name="Primary action works",
                         instruction="activate it",
-                        passed=value > 0,
+                        passed=trial <= passed_trials,
                         target="Start",
-                        observed=["visible content changed"] if value > 0 else [],
+                        trial=trial,
+                        observed=["visible content changed"] if trial <= passed_trials else [],
                     )
+                    for trial in range(1, trials_per_task + 1)
                 ],
             )
 
@@ -129,6 +136,7 @@ def cfg(tmp_path: Path) -> orchestrator.LoopConfig:
         max_iters=8,
         patience=3,
         tolerance=1.0,
+        promotion_alpha=1.0,
     )
 
 
@@ -153,7 +161,7 @@ class TestConvergence:
         cfg.max_iters = 2
         run.install(monkeypatch)
 
-        async def evaluated(html, *, tasks, viewport=(1280, 800)):
+        async def evaluated(html, *, tasks, viewport=(1280, 800), trials_per_task=1):
             score = run.task_scores[run.iter - 1]
             errors = ["page crashed"] if run.iter == 1 else []
             return browser_evaluator.EvaluationResult(
@@ -167,7 +175,9 @@ class TestConvergence:
                         target="Start",
                         observed=["visible content changed"],
                         errors=errors,
+                        trial=trial,
                     )
+                    for trial in range(1, trials_per_task + 1)
                 ],
                 correctness_errors=errors,
             )
@@ -176,6 +186,44 @@ class TestConvergence:
         result = orchestrator.run_loop_sync(cfg)
         assert result.best_iter == 2
         assert result.best_score == 50.0
+
+    def test_default_significance_rejects_too_few_paired_wins(
+        self, cfg: orchestrator.LoopConfig, monkeypatch: pytest.MonkeyPatch
+    ):
+        cfg.max_iters = 2
+        cfg.promotion_alpha = 0.05
+        FakeRun(
+            scores=[[3] * 10, [3] * 10],
+            task_scores=[0.0, 66.67],
+        ).install(monkeypatch)
+
+        result = orchestrator.run_loop_sync(cfg)
+        saved = storage.Storage(cfg.db_path).iterations_for_run(result.run_id)
+
+        assert result.best_iter == 1
+        assert saved[1]["promoted"] is False
+        assert saved[1]["promotion_reason"] == "not_significant"
+        assert saved[1]["promotion_wins"] == 4
+        assert saved[1]["promotion_p_value"] == pytest.approx(0.0625)
+
+    def test_default_significance_promotes_six_paired_wins(
+        self, cfg: orchestrator.LoopConfig, monkeypatch: pytest.MonkeyPatch
+    ):
+        cfg.max_iters = 2
+        cfg.promotion_alpha = 0.05
+        FakeRun(
+            scores=[[3] * 10, [3] * 10],
+            task_scores=[0.0, 100.0],
+        ).install(monkeypatch)
+
+        result = orchestrator.run_loop_sync(cfg)
+        saved = storage.Storage(cfg.db_path).iterations_for_run(result.run_id)
+
+        assert result.best_iter == 2
+        assert saved[1]["promoted"] is True
+        assert saved[1]["promotion_reason"] == "significant_improvement"
+        assert saved[1]["promotion_wins"] == 6
+        assert saved[1]["promotion_p_value"] == pytest.approx(0.015625)
 
     def test_converges_when_scores_plateau(
         self, cfg: orchestrator.LoopConfig, monkeypatch: pytest.MonkeyPatch
@@ -283,9 +331,34 @@ class TestArtifacts:
         orchestrator.run_loop_sync(cfg)
         store = storage.Storage(cfg.db_path)
         iters = store.iterations_for_run(1)
-        assert "Behavioral task completion: 1/1" in iters[0]["feedback"]
+        assert "Behavioral task completion: 6/6" in iters[0]["feedback"]
         assert "great job" in iters[0]["feedback"]
         assert iters[0]["suggestions"] == ["ship it"]
+
+    def test_invalid_artifact_is_retained_but_cannot_be_promoted(
+        self, cfg: orchestrator.LoopConfig, monkeypatch: pytest.MonkeyPatch
+    ):
+        cfg.max_iters = 1
+        cfg.patience = 1
+        FakeRun(
+            scores=[[5, 1] * 5],
+            task_scores=[100.0],
+            htmls=[
+                (
+                    '<!doctype html><html><body><script src="https://example.com/app.js">'
+                    "</script></body></html>"
+                )
+            ],
+        ).install(monkeypatch)
+
+        result = orchestrator.run_loop_sync(cfg)
+        saved = storage.Storage(cfg.db_path).iterations_for_run(result.run_id)[0]
+
+        assert result.best_iter == 0
+        assert saved["promotion_eligible"] is False
+        assert saved["promoted"] is False
+        assert saved["promotion_reason"] == "blocked_by_guardrail"
+        assert saved["artifact_validation"]["passed"] is False
 
 
 class TestBudget:
@@ -352,7 +425,7 @@ class TestFeedbackFlow:
         assert reqs[0].prior_html is None
         assert reqs[0].critic_feedback is None
         assert "f1" in reqs[1].critic_feedback
-        assert reqs[1].suggestions == ["s1"]
+        assert "s1" in reqs[1].suggestions
         assert reqs[1].prior_html is not None
 
     def test_regression_reseeds_from_best_iteration(
@@ -382,4 +455,9 @@ class TestFeedbackFlow:
         # the best iteration's HTML and critique.
         assert "iter 1" in reqs[2].prior_html
         assert "f1" in reqs[2].critic_feedback
-        assert reqs[2].suggestions == ["s1"]
+        assert "s1" in reqs[2].suggestions
+
+        saved = storage.Storage(cfg.db_path).iterations_for_run(result.run_id)
+        assert saved[0]["parent_iter"] is None
+        assert saved[1]["parent_iter"] == 1
+        assert saved[2]["parent_iter"] == 1

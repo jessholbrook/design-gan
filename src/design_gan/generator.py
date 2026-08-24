@@ -29,13 +29,20 @@ Design priorities (in order):
 @dataclass
 class GenerationRequest:
     brief: str
+    product_domain: str = "landing-page"
     prior_html: str | None = None
     critic_feedback: str | None = None
     suggestions: list[str] | None = None
 
 
 def _build_user_message(req: GenerationRequest) -> str:
-    parts = [f"Brief: {req.brief}"]
+    parts = [f"Brief: {req.brief}", f"Frozen product domain: {req.product_domain}"]
+    if req.product_domain == "lead-generation":
+        parts.append(
+            "The evaluated product task is completing the primary lead form. Include one "
+            "clear form with properly labeled fields, a working submit control, and an "
+            "offline success state that visibly confirms submission."
+        )
     if req.prior_html:
         parts.append(
             "Here is the previous version of the site. Keep what works; fix the issues below.\n\n"

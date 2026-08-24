@@ -10,7 +10,7 @@ from dotenv import load_dotenv
 from rich.console import Console
 from rich.table import Table
 
-from . import orchestrator, storage
+from . import orchestrator, product_domains, storage
 
 app = typer.Typer(add_completion=False, help="Autoresearch-style design evolution loop.")
 console = Console()
@@ -40,10 +40,23 @@ def run(
     tolerance: float = typer.Option(1.0, help="Min primary-score gain to count as progress."),
     model: str = typer.Option(None, help="Override the Claude model ID."),
     runs_dir: Path = typer.Option(None, help="Where to store per-iteration artifacts."),
+    domain: str = typer.Option(
+        "landing-page", help="Frozen product domain: landing-page or lead-generation."
+    ),
+    evaluation_trials: int = typer.Option(
+        6, min=1, max=50, help="Repeated browser trials per frozen task."
+    ),
+    promotion_alpha: float = typer.Option(
+        0.05, min=0.0001, max=1.0, help="One-sided promotion significance threshold."
+    ),
 ) -> None:
     """Run one evolution loop for BRIEF until the score plateaus."""
     _load_env()
     runs_dir = runs_dir or _default_runs_dir()
+    try:
+        product_domains.get_domain(domain)
+    except ValueError as exc:
+        raise typer.BadParameter(str(exc), param_hint="--domain") from exc
     cfg = orchestrator.LoopConfig(
         brief=brief,
         runs_dir=runs_dir,
@@ -52,6 +65,9 @@ def run(
         max_iters=max_iters,
         patience=patience,
         tolerance=tolerance,
+        design_domain=domain,
+        evaluation_trials=evaluation_trials,
+        promotion_alpha=promotion_alpha,
     )
     result = orchestrator.run_loop_sync(cfg, console=console)
     console.rule("[bold green]Done")

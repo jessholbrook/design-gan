@@ -31,6 +31,11 @@ def test_empty_explicit_suite_is_rejected():
         frozen_suite([])
 
 
+def test_form_completion_is_a_supported_concrete_task():
+    task = BrowserTask("form-completion", "Complete form", "submit it")
+    assert frozen_suite([task]) == (task,)
+
+
 def test_explicit_primary_marker_outranks_generic_button():
     generic = {
         "tag": "button",
@@ -69,3 +74,22 @@ def test_result_exposes_task_rate_and_correctness_separately():
     assert payload["primary_metric"] == "task_completion_rate"
     assert payload["passed"] == payload["total"] == 1
     assert "1/1" in result.feedback()
+
+
+def test_feedback_groups_repeated_trials_by_task():
+    result = EvaluationResult(
+        score=50.0,
+        tasks=[
+            TaskResult(
+                task_id="primary-action",
+                name="Primary action works",
+                instruction="activate it",
+                passed=trial == 1,
+                target="Start",
+                trial=trial,
+                observed=["visible content changed"] if trial == 1 else ["no response"],
+            )
+            for trial in (1, 2)
+        ],
+    )
+    assert "1/2 trials passed" in result.feedback()

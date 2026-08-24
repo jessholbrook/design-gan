@@ -25,10 +25,13 @@ from typing import Any
 from rich.console import Console
 
 from . import (
+    artifact_policy,
     browser_evaluator,
     conversation_generator,
     critic,
     generator,
+    product_domains,
+    promotion,
     renderer,
     scorer,
     storage,
@@ -68,9 +71,14 @@ class LoopConfig:
     # turns). 1-5 feels right; 5 is usually enough to surface resolution
     # without exploding cost.
     max_conversation_turns: int = 5
-    # Frozen once at run start and replayed unchanged against every design
-    # candidate.  v2 begins with one concrete primary-action task.
-    design_tasks: tuple[browser_evaluator.BrowserTask, ...] = browser_evaluator.DEFAULT_DESIGN_TASKS
+    # Design-evaluation policy. A product-domain plan is materialized once and
+    # persisted on the run; design_tasks remains an escape hatch for existing
+    # programmatic callers and tests.
+    design_domain: str = "landing-page"
+    evaluation_trials: int = 6
+    promotion_alpha: float = 0.05
+    design_tasks: tuple[browser_evaluator.BrowserTask, ...] | None = None
+    artifact_policy: artifact_policy.ArtifactPolicy = artifact_policy.DEFAULT_ARTIFACT_POLICY
 
 
 @dataclass
@@ -89,6 +97,8 @@ class _IterState:
     artifact: str | None = None  # design: site HTML; conversation: system prompt
     feedback: str | None = None
     suggestions: list[str] | None = field(default=None)
+    iter: int | None = None
+    task_results: list[dict[str, Any]] | None = None
 
 
 @dataclass
@@ -102,6 +112,7 @@ class _IterOutcome:
     cost_usd: float
     feedback: str | None = None
     suggestions: list[str] | None = None
+    artifact_validation: dict[str, Any] | None = None
     console_extra: str = ""  # appended to the score line, e.g. turns/satisfied
 
 
@@ -109,6 +120,26 @@ _IterateFn = Callable[
     [LoopConfig, int, "_IterState", Path, "storage.Storage", int, Console],
     Awaitable[_IterOutcome],
 ]
+
+
+def _design_evaluation_plan(cfg: LoopConfig) -> product_domains.EvaluationPlan:
+    if cfg.design_tasks is None:
+        return product_domains.make_plan(
+            cfg.design_domain,
+            trials_per_task=cfg.evaluation_trials,
+            promotion_alpha=cfg.promotion_alpha,
+            minimum_effect=cfg.tolerance,
+        )
+    tasks = browser_evaluator.frozen_suite(cfg.design_tasks)
+    return product_domains.EvaluationPlan(
+        domain="custom",
+        domain_version=1,
+        evaluator_version=2,
+        trials_per_task=cfg.evaluation_trials,
+        promotion_alpha=cfg.promotion_alpha,
+        minimum_effect=cfg.tolerance,
+        tasks=tasks,
+    )
 
 
 async def _design_iterate(
@@ -127,12 +158,14 @@ async def _design_iterate(
         cfg.model,
         generator.GenerationRequest(
             brief=cfg.brief,
+            product_domain=cfg.design_domain,
             prior_html=prev.artifact,
             critic_feedback=prev.feedback,
             suggestions=prev.suggestions,
         ),
     )
     cost = gen_cost
+    artifact_check = artifact_policy.validate_html(html, cfg.artifact_policy)
 
     iter_dir = run_dir / f"iter_{i:03d}"
     iter_dir.mkdir(parents=True, exist_ok=True)
@@ -149,11 +182,16 @@ async def _design_iterate(
     # rate is the north-star signal for design search; it is not blended with
     # the critic's SUS opinion.
     store.update_progress(run_id, i, PHASE_EVALUATING)
-    console.print(f"[dim]evaluating ({len(cfg.design_tasks)} frozen browser task(s))...[/dim]")
+    plan = _design_evaluation_plan(cfg)
+    console.print(
+        f"[dim]evaluating ({len(plan.tasks)} frozen browser task(s), "
+        f"{plan.trials_per_task} trial(s) each)...[/dim]"
+    )
     evaluation = await browser_evaluator.evaluate(
         html,
-        tasks=cfg.design_tasks,
+        tasks=plan.tasks,
         viewport=cfg.viewport,
+        trials_per_task=plan.trials_per_task,
     )
     browser_evaluator.write_artifact(evaluation, iter_dir)
 
@@ -189,18 +227,31 @@ async def _design_iterate(
         axe_error=render.axe_error,
         console_errors=render.console_errors,
         evaluator_errors=evaluation.correctness_errors,
+        artifact_validation=artifact_check.to_dict(),
     )
     optimization_feedback = (
-        f"{evaluation.feedback()}\n\n"
+        f"{evaluation.feedback()}\n{artifact_check.feedback()}\n\n"
         f"Diagnostic SUS feedback (not the primary score): {sus.feedback}"
     )
     optimization_suggestions = list(sus.suggestions)
     if evaluation.passed < evaluation.total:
+        if plan.domain == "lead-generation":
+            task_suggestion = (
+                "Make the primary lead form discoverable and completable with labeled, valid "
+                "fields; submission must show an offline success state without runtime errors."
+            )
+        else:
+            task_suggestion = (
+                "Make the page's primary call to action obvious, enabled, and behaviorally "
+                "functional: activating it must navigate, scroll, open a dialog/window, or "
+                "change visible content without runtime errors."
+            )
+        optimization_suggestions.insert(0, task_suggestion)
+    if not artifact_check.passed:
         optimization_suggestions.insert(
             0,
-            "Make the page's primary call to action obvious, enabled, and behaviorally "
-            "functional: activating it must navigate, scroll, open a dialog/window, or "
-            "change visible content without runtime errors.",
+            "Keep the artifact one complete, standalone, offline HTML document; remove "
+            "external resources, network APIs, and embedded documents.",
         )
     return _IterOutcome(
         artifact=html,
@@ -210,6 +261,7 @@ async def _design_iterate(
         cost_usd=cost,
         feedback=optimization_feedback,
         suggestions=optimization_suggestions,
+        artifact_validation=artifact_check.to_dict(),
         console_extra=f"  promotable={result.promotion_eligible}",
     )
 
@@ -311,17 +363,17 @@ async def _run_shared_loop(
 ) -> LoopResult:
     console = console or Console()
     store = storage.Storage(cfg.db_path)
+    design_plan = _design_evaluation_plan(cfg) if kind == KIND_DESIGN else None
     if run_id is None:
-        suite = (
-            [task.to_dict() for task in browser_evaluator.frozen_suite(cfg.design_tasks)]
-            if kind == KIND_DESIGN
-            else None
-        )
+        suite = [task.to_dict() for task in design_plan.tasks] if design_plan else None
         run_id = store.create_run(
             cfg.brief,
             cfg.model,
             kind=kind,
             evaluation_suite=suite,
+            evaluation_plan=design_plan.to_dict() if design_plan else None,
+            artifact_policy=(cfg.artifact_policy.to_dict() if kind == KIND_DESIGN else None),
+            domain=design_plan.domain if design_plan else None,
         )
     run_dir = cfg.runs_dir / f"run_{run_id:04d}"
     run_dir.mkdir(parents=True, exist_ok=True)
@@ -356,6 +408,36 @@ async def _run_shared_loop(
 
             try:
                 out = await iterate(cfg, run_id, prev, run_dir, store, i, console)
+                if design_plan is not None:
+                    decision = promotion.decide(
+                        candidate_score=out.score.composite,
+                        candidate_eligible=out.score.promotion_eligible,
+                        candidate_results=out.score.breakdown.get("task_results"),
+                        baseline_score=best_score,
+                        baseline_results=best.task_results,
+                        minimum_effect=design_plan.minimum_effect,
+                        alpha=design_plan.promotion_alpha,
+                    )
+                else:
+                    effect = (
+                        out.score.composite - best_score
+                        if best_score is not None
+                        else out.score.composite
+                    )
+                    promoted = best_score is None or effect > cfg.tolerance
+                    decision = promotion.PromotionDecision(
+                        promoted=promoted,
+                        reason=(
+                            "initial_candidate"
+                            if best_score is None
+                            else ("score_improvement" if promoted else "effect_below_minimum")
+                        ),
+                        effect=effect,
+                        p_value=None,
+                        comparable_trials=0,
+                        wins=0,
+                        losses=0,
+                    )
                 store.save_iteration(
                     storage.IterationRecord(
                         run_id=run_id,
@@ -375,6 +457,15 @@ async def _run_shared_loop(
                         promotion_eligible=out.score.promotion_eligible,
                         guardrails=out.score.guardrails,
                         task_results=out.score.breakdown.get("task_results"),
+                        artifact_validation=out.artifact_validation,
+                        parent_iter=prev.iter,
+                        promoted=decision.promoted,
+                        promotion_reason=decision.reason,
+                        promotion_effect=decision.effect,
+                        promotion_p_value=decision.p_value,
+                        promotion_comparable_trials=decision.comparable_trials,
+                        promotion_wins=decision.wins,
+                        promotion_losses=decision.losses,
                     )
                 )
             except Exception as e:
@@ -395,6 +486,10 @@ async def _run_shared_loop(
                 f"{penalty_label}={out.score.axe_penalty:.1f}  "
                 f"[dim]cost=${out.cost_usd:.3f}{out.console_extra}[/dim]"
             )
+            p_text = f" p={decision.p_value:.4f}" if decision.p_value is not None else ""
+            console.print(
+                f"[dim]promotion:[/dim] {decision.reason} effect={decision.effect:.1f}{p_text}"
+            )
             next_feedback = out.feedback or out.sus.feedback
             feedback_txt = next_feedback[:feedback_limit] if feedback_limit else next_feedback
             console.print(f"[dim]feedback:[/dim] {feedback_txt}")
@@ -403,10 +498,10 @@ async def _run_shared_loop(
                 artifact=out.artifact,
                 feedback=next_feedback,
                 suggestions=out.suggestions or out.sus.suggestions,
+                iter=i,
+                task_results=out.score.breakdown.get("task_results"),
             )
-            if out.score.promotion_eligible and (
-                best_score is None or out.score.composite > best_score + cfg.tolerance
-            ):
+            if decision.promoted:
                 best_score = out.score.composite
                 best_iter = i
                 stale = 0

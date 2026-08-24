@@ -152,7 +152,7 @@ class TestOrchestratorEnsemble:
                 console_errors=[],
             )
 
-        async def fake_evaluate(html, *, tasks, viewport=(1280, 800)):
+        async def fake_evaluate(html, *, tasks, viewport=(1280, 800), trials_per_task=1):
             return browser_evaluator.EvaluationResult(
                 score=100.0,
                 tasks=[
@@ -163,7 +163,9 @@ class TestOrchestratorEnsemble:
                         passed=True,
                         target="Start",
                         observed=["visible content changed"],
+                        trial=trial,
                     )
+                    for trial in range(1, trials_per_task + 1)
                 ],
             )
 
@@ -247,7 +249,7 @@ class TestOrchestratorEnsemble:
                 console_errors=[],
             )
 
-        async def fake_evaluate(html, *, tasks, viewport=(1280, 800)):
+        async def fake_evaluate(html, *, tasks, viewport=(1280, 800), trials_per_task=1):
             return browser_evaluator.EvaluationResult(
                 score=100.0,
                 tasks=[
@@ -258,7 +260,9 @@ class TestOrchestratorEnsemble:
                         passed=True,
                         target="Start",
                         observed=["visible content changed"],
+                        trial=trial,
                     )
+                    for trial in range(1, trials_per_task + 1)
                 ],
             )
 
