@@ -210,9 +210,15 @@
     const gates = it.guardrails || {};
     const a11y = gates.accessibility && gates.accessibility.passed;
     const correctness = gates.correctness && gates.correctness.passed;
+    const artifact = !gates.artifact_boundary || gates.artifact_boundary.passed;
+    const pValue = it.promotion_p_value == null ? 'n/a' : Number(it.promotion_p_value).toFixed(4);
     return `<h3>Behavioral evaluation</h3>
       <p class="scrub-feedback">Promotion: <b>${it.promotion_eligible ? 'eligible' : 'blocked'}</b>
-      · accessibility ${a11y ? 'pass' : 'fail'} · correctness ${correctness ? 'pass' : 'fail'}</p>
+      · accessibility ${a11y ? 'pass' : 'fail'} · correctness ${correctness ? 'pass' : 'fail'}
+      · artifact ${artifact ? 'pass' : 'fail'}</p>
+      <p class="scrub-feedback">Decision: <b>${it.promoted ? 'promoted' : 'rejected'}</b>
+      · ${escapeHtml(it.promotion_reason || 'legacy')} · effect ${Number(it.promotion_effect || 0).toFixed(1)}
+      · p=${pValue} · parent ${it.parent_iter == null ? 'initial' : `#${it.parent_iter}`}</p>
       ${tasks ? `<ul class="scrub-suggestions">${tasks}</ul>` : ''}`;
   }
 

@@ -19,6 +19,7 @@
   const briefTA = form.querySelector('textarea[name="brief"]');
   const briefLabel = form.querySelector('[data-brief-label]');
   const conversationOnly = form.querySelectorAll('[data-conversation-only]');
+  const designOnly = form.querySelectorAll('[data-design-only]');
   const briefPlaceholders = {
     design: 'A landing page for a weekend cycling tour in rural Vermont.',
     conversation: "How do I make cold brew coffee at home?",
@@ -31,6 +32,10 @@
     }
     conversationOnly.forEach((el) => {
       if (kind === 'conversation') el.removeAttribute('hidden');
+      else el.setAttribute('hidden', '');
+    });
+    designOnly.forEach((el) => {
+      if (kind === 'design') el.removeAttribute('hidden');
       else el.setAttribute('hidden', '');
     });
   }
@@ -53,6 +58,10 @@
     };
     if (kind === 'conversation') {
       body.max_conversation_turns = Number(fd.get('max_conversation_turns')) || 5;
+    } else {
+      body.design_domain = fd.get('design_domain') || 'landing-page';
+      body.evaluation_trials = Number(fd.get('evaluation_trials')) || 6;
+      body.promotion_alpha = Number(fd.get('promotion_alpha')) || 0.05;
     }
     const token = fd.get('token');
     if (token) {
@@ -161,7 +170,8 @@
       if (it.primary_metric === 'task_completion_rate') {
         stats = `<span>tasks <b>${(it.primary_score || 0).toFixed(0)}</b></span>
                  <span>SUS diagnostic <b>${it.sus_score.toFixed(0)}</b></span>
-                 <span>guardrails <b>${it.promotion_eligible ? 'eligible' : 'blocked'}</b></span>`;
+                 <span>guardrails <b>${it.promotion_eligible ? 'eligible' : 'blocked'}</b></span>
+                 <span>decision <b>${it.promoted ? 'promoted' : 'rejected'}</b></span>`;
       } else {
         stats = `<span>SUS <b>${it.sus_score.toFixed(0)}</b></span>
                  <span>a11y penalty <b>${it.axe_penalty.toFixed(0)}</b></span>`;
@@ -169,7 +179,7 @@
     }
     return `<article class="iter-card appearing" data-iter="${it.iter}"
       data-score="${score}" data-sus="${it.sus_score}"
-      data-eligible="${it.promotion_eligible ? 1 : 0}">
+      data-eligible="${it.promoted ? 1 : 0}">
       <header>
         <span class="iter-num">#${it.iter}</span>
         <span class="badge ${cls}">${score.toFixed(0)}</span>
@@ -246,7 +256,7 @@
       iter: it.iter,
       composite: it.composite_score,
       sus: it.sus_score,
-      eligible: it.promotion_eligible,
+      eligible: it.promoted,
     });
     renderChart(iters);
     updateSummary(iters);

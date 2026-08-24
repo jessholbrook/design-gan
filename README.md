@@ -13,23 +13,27 @@ correctness act as hard promotion guardrails.
 
 ```
 brief ──► generator ──► HTML ──┬─► renderer ──► screenshot + DOM + axe
-                               └─► browser evaluator ──► frozen task results
-                                                        │
+                 │             ├─► artifact validator ─► boundary guardrail
+                 │             └─► browser evaluator ──► repeated task results
+                 │                                      │
 critic ──► SUS + feedback (diagnostic) ──────────────────┤
                                                         ▼
-          best eligible ◄─ task score + hard guardrails ─ scorer
-                 │
-                 ▼
-            sqlite + runs/ + viewer/scrubber
+          promoted parent ◄─ paired significance + hard guardrails
+                 │                                      │
+                 └──────── sqlite + runs/ + viewer/scrubber
 ```
 
 - **`generator.py`** — Claude writes a standalone HTML/CSS/JS document.
 - **`renderer.py`** — Playwright headless Chromium: screenshot, DOM, axe-core
   (vendored into the package, so renders are deterministic and offline-safe).
-- **`browser_evaluator.py`** — replays the run's frozen browser scenario from
-  a clean page and records pass/fail evidence plus runtime errors. The first v2
-  milestone deliberately contains one concrete scenario: find and activate the
-  primary call to action and observe a meaningful response.
+- **`product_domains.py`** — materializes a versioned evaluation plan before a
+  run starts. The current concrete profiles are landing-page primary-action and
+  lead-generation form-completion.
+- **`artifact_policy.py`** — enforces the versioned mutable boundary: one
+  complete, standalone, offline HTML document no larger than 512 KiB.
+- **`browser_evaluator.py`** — replays the run's frozen browser scenario for a
+  configured number of isolated trials and records pass/fail evidence plus
+  runtime errors.
 - **`critic.py`** — Claude scores the screenshot on the 10-item SUS (Likert 1-5)
   and returns prioritized suggestions. SUS is feedback, not the design
   north-star. The response contract is a fenced JSON block validated against a
@@ -38,11 +42,15 @@ critic ──► SUS + feedback (diagnostic) ───────────�
   Candidates with critical/serious axe violations, an axe execution failure,
   JavaScript console errors, page errors, or evaluator action errors are marked
   ineligible for promotion rather than receiving a blended penalty.
-- **`orchestrator.py`** — the loop. Only eligible candidates can become the
-  best iteration; it stops after `patience` iterations without a
-  `tolerance`-point primary-score gain, or at `max_iters`.
+- **`promotion.py`** — compares paired task/trial outcomes against the current
+  parent with a one-sided exact sign test. Promotion also requires the minimum
+  configured effect and every hard guardrail.
+- **`orchestrator.py`** — the loop. Every candidate records its parent and an
+  explicit promotion decision; rejected candidates remain in history. The loop
+  stops after `patience` rejections or at `max_iters`.
 - **`storage.py`** — migration-safe SQLite run/iteration history, including the
-  frozen suite, task evidence, diagnostic scores, and guardrail results.
+  frozen plan and artifact policy, candidate lineage, task evidence,
+  diagnostic scores, guardrails, and promotion evidence.
 - **`viewer.py`** — FastAPI viewer to browse iterations, plus a scrubber
   (`/runs/{id}/scrub`) for stepping through the evolution with a before/after
   compare slider.
@@ -63,6 +71,8 @@ design-gan viewer  # http://127.0.0.1:8000
 
 # Or run one evolution loop from the terminal
 design-gan run "A landing page for a weekend cycling tour in rural Vermont."
+design-gan run "Collect demo requests for a B2B analytics product." \
+  --domain lead-generation --evaluation-trials 8 --promotion-alpha 0.05
 design-gan list-runs
 
 # Write the best iteration's HTML (or system prompt, for conversation runs) to a file
@@ -138,8 +148,8 @@ pip install -e ".[dev]"
 pytest
 ```
 
-209 tests covering the browser-evaluator contract, primary scoring and
-promotion gates, storage (schema + migration), the extractor
+239 tests covering the browser-evaluator and artifact contracts, primary
+scoring, paired promotion decisions, storage (schema + migration), the extractor
 helpers, the orchestrator loop (with generator/critic/renderer faked), the
 viewer's HTTP endpoints (including the scrubber route), and the CLI.
 
@@ -151,12 +161,17 @@ viewer's HTTP endpoints (including the scrubber route), and the CLI.
   quantity used to rank eligible candidates. SUS and axe penalties remain
   visible diagnostics but are not averaged into the north-star.
 - **Hard promotion gates.** Critical/serious accessibility failures and
-  browser/runtime correctness errors block promotion even when task completion
-  is high. Blocked candidates remain in history for diagnosis.
-- **Frozen scenario.** The scenario definition is materialized once on the run
-  record and replayed unchanged against every iteration. Each iteration writes
-  `evaluation.json` alongside `site.html`, `screenshot.png`, `dom.html`, and
-  `axe.json`.
+  browser/runtime correctness errors, artifact boundary violations, and axe
+  execution failures block promotion even when task completion is high.
+  Blocked candidates remain in history for diagnosis.
+- **Frozen run contracts.** Domain/version, scenarios, trial count, promotion
+  threshold, minimum effect, and artifact policy are materialized once on the
+  run record and replayed unchanged. Each iteration writes `evaluation.json`
+  alongside `site.html`, `screenshot.png`, `dom.html`, and `axe.json`.
+- **Repeated, paired promotion.** Every task is replayed in fresh browser
+  contexts. A candidate must improve enough and its paired binary outcomes must
+  clear the configured one-sided sign test. The p-value, comparable trials,
+  wins, losses, effect, reason, and parent iteration are persisted.
 - **Convergence.** "No further improvements" is operationalized as
   `patience` iterations without an eligible primary-score gain of at least
   `tolerance` points.
@@ -169,18 +184,15 @@ viewer's HTTP endpoints (including the scrubber route), and the CLI.
   iterations, so the Agent SDK's prompt caching keeps the repeated cost of
   those instructions near zero.
 
-### Initial evaluator boundary
+### Evaluator boundary and roadmap
 
-This milestone is intentionally not a generic action/assertion DSL. It covers
-one ubiquitous landing-page behavior: the primary action must be discoverable,
-enabled, and produce observable browser behavior (navigation, scrolling, a
-dialog/new window, or changed visible content). The generator can explicitly
-identify the main control with `data-primary-action`; otherwise the evaluator
-uses semantic CTA/button/link signals.
+This implementation intentionally does not introduce a generic action/assertion
+DSL. It supports two semantic behaviors: discover and activate a landing page's
+primary action, or complete and submit a lead form. New behavior requires a new
+versioned product-domain profile and evaluator implementation.
 
-Open design choices for subsequent milestones include how product-specific
-task suites are authored and versioned, whether task attempts use a model-driven
-browser actor or deterministic selectors, how many repeated trials are needed,
-and what significance rule should gate promotion when completion becomes
-stochastic. Those decisions are left open rather than hidden behind a premature
-framework in this first slice.
+The completed concrete roadmap is in [`docs/roadmap.md`](docs/roadmap.md).
+Remaining evaluator-design choices are whether deterministic trials should gain
+controlled scenario variations, when a model-driven browser actor has enough
+benchmark evidence to replace semantic automation, and how to add sequestered
+holdout scenarios without making small domain suites too sparse.
