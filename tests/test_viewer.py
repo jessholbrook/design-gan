@@ -173,7 +173,21 @@ class TestJsonApi:
             "promotion_eligible",
             "guardrails",
             "task_results",
+            "artifact_validation",
+            "parent_iter",
+            "promoted",
+            "promotion_reason",
+            "promotion_effect",
+            "promotion_p_value",
         }.issubset(it)
+
+    def test_config_lists_versioned_design_domains(self, client: TestClient):
+        domains = client.get("/api/config").json()["design_domains"]
+        assert {domain["id"] for domain in domains} == {
+            "landing-page",
+            "lead-generation",
+        }
+        assert all(domain["version"] == 1 for domain in domains)
 
     def test_api_unknown_run_is_404(self, client: TestClient):
         r = client.get("/api/runs/999")
@@ -192,6 +206,38 @@ class TestStartRunValidation:
     def test_oversized_max_iters_rejected(self, client: TestClient):
         r = client.post("/api/runs", json={"brief": "x", "max_iters": 1000})
         assert r.status_code == 422
+
+    def test_unknown_design_domain_rejected(self, client: TestClient):
+        r = client.post("/api/runs", json={"brief": "x", "design_domain": "checkout"})
+        assert r.status_code == 422
+
+    def test_invalid_trial_count_rejected(self, client: TestClient):
+        r = client.post("/api/runs", json={"brief": "x", "evaluation_trials": 0})
+        assert r.status_code == 422
+
+    def test_selected_domain_and_promotion_policy_are_frozen_on_run(
+        self, client: TestClient, monkeypatch: pytest.MonkeyPatch
+    ):
+        from design_gan import orchestrator
+
+        monkeypatch.setattr(orchestrator, "run_loop_sync", lambda *args, **kwargs: None)
+        response = client.post(
+            "/api/runs",
+            json={
+                "brief": "Collect sales leads",
+                "design_domain": "lead-generation",
+                "evaluation_trials": 8,
+                "promotion_alpha": 0.1,
+            },
+        )
+
+        assert response.status_code == 200
+        run_id = response.json()["run_id"]
+        run = client.get(f"/api/runs/{run_id}").json()["run"]
+        assert run["domain"] == "lead-generation"
+        assert [task["id"] for task in run["evaluation_plan"]["tasks"]] == ["form-completion"]
+        assert run["evaluation_plan"]["trials_per_task"] == 8
+        assert run["evaluation_plan"]["promotion_alpha"] == pytest.approx(0.1)
 
 
 class TestStartTokenGate:
@@ -235,6 +281,10 @@ class TestStartTokenGate:
         run_id = r.json()["run_id"]
         run = gated_client.get(f"/api/runs/{run_id}").json()["run"]
         assert [task["id"] for task in run["evaluation_suite"]] == ["primary-action"]
+        assert run["evaluation_plan"]["trials_per_task"] == 6
+        assert run["evaluation_plan"]["promotion_alpha"] == pytest.approx(0.05)
+        assert run["artifact_policy"]["kind"] == "standalone-html"
+        assert run["artifact_policy"]["network_access"] is False
         detail = gated_client.get(f"/runs/{run_id}").text
         assert "Frozen browser tasks" in detail
         assert "best task score" in detail

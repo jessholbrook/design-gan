@@ -16,7 +16,7 @@ from fastapi import FastAPI, Header, HTTPException
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, StreamingResponse
 from pydantic import BaseModel, Field
 
-from . import browser_evaluator, critic, orchestrator, storage
+from . import artifact_policy, critic, orchestrator, product_domains, storage
 
 
 def _runs_dir() -> Path:
@@ -192,6 +192,20 @@ def _new_run_form() -> str:
       <label>Tolerance<input type="number" name="tolerance" value="1.0" step="0.5" min="0" /></label>
       <label>Model<input type="text" name="model" value="{html.escape(_default_model())}" /></label>
     </div>
+    <div class="row" data-design-only>
+      <label>Product domain
+        <select name="design_domain">
+          <option value="landing-page">Landing page — primary action</option>
+          <option value="lead-generation">Lead generation — complete form</option>
+        </select>
+      </label>
+      <label>Trials per task
+        <input type="number" name="evaluation_trials" value="6" min="1" max="50" />
+      </label>
+      <label>Promotion alpha
+        <input type="number" name="promotion_alpha" value="0.05" step="0.01" min="0.0001" max="1" />
+      </label>
+    </div>
     <label data-conversation-only hidden>Max conversation turns
       <input type="number" name="max_conversation_turns" value="5" min="1" max="10" />
     </label>
@@ -250,10 +264,12 @@ def _iter_card_html(run_id: int, it: dict, kind: str = "design") -> str:
         )
         if it.get("primary_metric") == "task_completion_rate":
             gate = "eligible" if it.get("promotion_eligible") else "blocked"
+            decision = "promoted" if it.get("promoted") else "rejected"
             stats = (
                 f"<span>tasks <b>{(it.get('primary_score') or 0):.0f}</b></span>"
                 f"<span>SUS diagnostic <b>{it['sus_score']:.0f}</b></span>"
                 f"<span>guardrails <b>{gate}</b></span>"
+                f"<span>decision <b>{decision}</b></span>"
             )
         else:
             stats = (
@@ -267,7 +283,7 @@ def _iter_card_html(run_id: int, it: dict, kind: str = "design") -> str:
     )
     return f"""<article class="iter-card" data-iter="{it["iter"]}"
   data-score="{it["composite_score"]}" data-sus="{it["sus_score"]}"
-  data-eligible="{1 if it.get("promotion_eligible", True) else 0}">
+  data-eligible="{1 if it.get("promoted", True) else 0}">
   <header>
     <span class="iter-num">#{it["iter"]}</span>
     <span class="badge {_score_class(it["composite_score"])}{blocked_class}">
@@ -332,18 +348,31 @@ def run_detail(run_id: int) -> str:
 
     best_score = run.get("best_score")
     best_score_txt = f"{best_score:.0f}" if best_score is not None else "—"
-    v2_design = kind == "design" and bool(run.get("evaluation_suite"))
+    v2_design = kind == "design" and bool(run.get("evaluation_plan") or run.get("evaluation_suite"))
     best_score_label = "best task score" if v2_design else "best score"
     suite_html = ""
     if v2_design:
+        plan = run.get("evaluation_plan") or {}
+        plan_tasks = plan.get("tasks") or run.get("evaluation_suite") or []
         tasks = "".join(
             f"<li>{html.escape(task.get('name') or task.get('id') or 'task')}: "
             f"{html.escape(task.get('instruction') or '')}</li>"
-            for task in run["evaluation_suite"]
+            for task in plan_tasks
+        )
+        plan_meta = (
+            f'<p class="muted">domain {html.escape(run.get("domain") or "legacy")} · '
+            f"{plan.get('trials_per_task', 1)} trial(s)/task · "
+            f"promotion α={plan.get('promotion_alpha', 'legacy')}</p>"
+        )
+        policy = run.get("artifact_policy") or {}
+        policy_meta = (
+            f'<p class="muted">artifact {html.escape(policy.get("kind") or "legacy")} · '
+            f"max {policy.get('max_bytes', '—')} bytes · "
+            f"network {'allowed' if policy.get('network_access') else 'blocked'}</p>"
         )
         suite_html = (
             '<details class="run-evaluation-suite"><summary>Frozen browser tasks</summary>'
-            f"<ul>{tasks}</ul></details>"
+            f"{plan_meta}{policy_meta}<ul>{tasks}</ul></details>"
         )
     cards = "".join(_iter_card_html(run_id, it, kind=kind) for it in iters)
 
@@ -551,6 +580,9 @@ class StartRunRequest(BaseModel):
     token: str | None = None  # required iff DESIGN_GAN_START_TOKEN is set
     kind: str = Field(default="design", pattern="^(design|conversation)$")
     max_conversation_turns: int = Field(default=5, ge=1, le=10)
+    design_domain: str = Field(default="landing-page", pattern="^(landing-page|lead-generation)$")
+    evaluation_trials: int = Field(default=6, ge=1, le=50)
+    promotion_alpha: float = Field(default=0.05, gt=0.0, le=1.0)
 
 
 def _check_start_token(req: StartRunRequest, authorization: str | None) -> None:
@@ -580,6 +612,10 @@ def api_config() -> JSONResponse:
                 round(max(0.0, budget - used), 4) if budget is not None else None
             ),
             "critics": [c.name for c in critics] if critics else ["Usability"],
+            "design_domains": [
+                {"id": domain.id, "name": domain.name, "version": domain.version}
+                for domain in product_domains.DOMAINS.values()
+            ],
         }
     )
 
@@ -629,18 +665,32 @@ async def start_run(
         daily_budget_usd=budget,
         critics=enabled_critics,
         max_conversation_turns=req.max_conversation_turns,
+        design_domain=req.design_domain,
+        evaluation_trials=req.evaluation_trials,
+        promotion_alpha=req.promotion_alpha,
     )
     # Pre-create the run so we can return its id immediately.
-    suite = (
-        [task.to_dict() for task in browser_evaluator.DEFAULT_DESIGN_TASKS]
+    plan = (
+        product_domains.make_plan(
+            req.design_domain,
+            trials_per_task=req.evaluation_trials,
+            promotion_alpha=req.promotion_alpha,
+            minimum_effect=req.tolerance,
+        )
         if req.kind == "design"
         else None
     )
+    suite = [task.to_dict() for task in plan.tasks] if plan else None
     run_id = _store().create_run(
         req.brief,
         model,
         kind=req.kind,
         evaluation_suite=suite,
+        evaluation_plan=plan.to_dict() if plan else None,
+        artifact_policy=(
+            artifact_policy.DEFAULT_ARTIFACT_POLICY.to_dict() if req.kind == "design" else None
+        ),
+        domain=plan.domain if plan else None,
     )
     entry = (
         orchestrator.run_conversation_loop_sync

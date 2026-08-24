@@ -74,6 +74,7 @@ def design_score(
     axe_error: str | None,
     console_errors: list[str],
     evaluator_errors: list[str],
+    artifact_validation: dict[str, Any] | None = None,
 ) -> Score:
     """Score a design candidate and apply its promotion guardrails.
 
@@ -96,6 +97,9 @@ def design_score(
     accessibility_passed = axe_error is None and not blocking_violations
     correctness_errors = [*console_errors, *evaluator_errors]
     correctness_passed = not correctness_errors
+    artifact_passed = (
+        bool(artifact_validation.get("passed")) if artifact_validation is not None else True
+    )
     guardrails = {
         "accessibility": {
             "passed": accessibility_passed,
@@ -106,6 +110,8 @@ def design_score(
             "passed": correctness_passed,
             "errors": correctness_errors,
         },
+        "artifact_boundary": artifact_validation
+        or {"passed": True, "violations": [], "legacy": True},
     }
     primary = max(0.0, min(100.0, float(task_score)))
     return Score(
@@ -113,7 +119,7 @@ def design_score(
         axe_penalty=diagnostic_axe,
         composite=round(primary, 2),
         primary_metric="task_completion_rate",
-        promotion_eligible=accessibility_passed and correctness_passed,
+        promotion_eligible=accessibility_passed and correctness_passed and artifact_passed,
         guardrails=guardrails,
         breakdown={
             "task_results": task_results,

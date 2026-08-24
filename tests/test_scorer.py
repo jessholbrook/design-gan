@@ -148,3 +148,18 @@ class TestDesignScore:
         )
         assert result.promotion_eligible is False
         assert result.guardrails["correctness"]["errors"] == ["boom"]
+
+    def test_artifact_boundary_blocks_promotion_without_changing_primary_score(self):
+        result = design_score(
+            [5, 1] * 5,
+            [],
+            task_score=100,
+            task_results=[],
+            axe_error=None,
+            console_errors=[],
+            evaluator_errors=[],
+            artifact_validation={"passed": False, "violations": ["external URL"]},
+        )
+        assert result.composite == 100.0
+        assert result.promotion_eligible is False
+        assert result.guardrails["artifact_boundary"]["violations"] == ["external URL"]
