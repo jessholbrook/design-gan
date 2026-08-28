@@ -43,6 +43,12 @@ def _build_user_message(req: GenerationRequest) -> str:
             "clear form with properly labeled fields, a working submit control, and an "
             "offline success state that visibly confirms submission."
         )
+    elif req.product_domain == "storefront":
+        parts.append(
+            "The evaluated product task is adding the primary product to a cart. Include a "
+            "clear Add to cart or Buy now control that works with pointer and keyboard, and "
+            "visibly update an offline cart or bag state to contain at least one item."
+        )
     if req.prior_html:
         parts.append(
             "Here is the previous version of the site. Keep what works; fix the issues below.\n\n"

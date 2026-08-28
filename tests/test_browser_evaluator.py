@@ -9,7 +9,9 @@ from design_gan.browser_evaluator import (
     BrowserTask,
     EvaluationResult,
     TaskResult,
+    _cart_candidate_score,
     _candidate_score,
+    _form_score,
     frozen_suite,
 )
 
@@ -36,6 +38,29 @@ def test_form_completion_is_a_supported_concrete_task():
     assert frozen_suite([task]) == (task,)
 
 
+def test_named_scenario_dispatches_through_its_concrete_behavior():
+    task = BrowserTask(
+        "mobile-holdout",
+        "Mobile holdout",
+        "activate it",
+        behavior="primary-action",
+        split="holdout",
+        viewport=(390, 844),
+    )
+    assert frozen_suite([task]) == (task,)
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [("split", "training"), ("interaction", "voice")],
+)
+def test_invalid_scenario_controls_are_rejected(field: str, value: str):
+    kwargs = {field: value}
+    task = BrowserTask("scenario", "Scenario", "do it", behavior="primary-action", **kwargs)
+    with pytest.raises(ValueError, match="invalid"):
+        frozen_suite([task])
+
+
 def test_explicit_primary_marker_outranks_generic_button():
     generic = {
         "tag": "button",
@@ -53,6 +78,23 @@ def test_explicit_primary_marker_outranks_generic_button():
         "href": "#book",
     }
     assert _candidate_score(primary) > _candidate_score(generic)
+
+
+def test_marked_lead_form_outranks_search_form():
+    search = {"fieldCount": 1, "hasSearch": True, "submitText": "Search"}
+    lead = {
+        "fieldCount": 2,
+        "hasSearch": False,
+        "dataPrimary": "",
+        "submitText": "Contact sales",
+    }
+    assert _form_score(lead) > _form_score(search)
+
+
+def test_add_to_cart_copy_outranks_generic_primary_action():
+    generic = {"text": "Learn more", "tag": "button", "width": 100, "height": 40}
+    cart = {"text": "Add to cart", "tag": "button", "width": 100, "height": 40}
+    assert _cart_candidate_score(cart) > _cart_candidate_score(generic)
 
 
 def test_result_exposes_task_rate_and_correctness_separately():

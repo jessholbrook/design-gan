@@ -71,9 +71,15 @@ class TestInitAndSchema:
         with sqlite3.connect(store.db_path) as c:
             run_cols = {row[1] for row in c.execute("PRAGMA table_info(runs)")}
             iter_cols = {row[1] for row in c.execute("PRAGMA table_info(iterations)")}
-        assert {"domain", "evaluation_suite", "evaluation_plan", "artifact_policy"}.issubset(
-            run_cols
-        )
+        assert {
+            "domain",
+            "evaluation_suite",
+            "evaluation_plan",
+            "artifact_policy",
+            "holdout_score",
+            "holdout_passed",
+            "holdout_results",
+        }.issubset(run_cols)
         assert {
             "primary_score",
             "promotion_eligible",
@@ -195,6 +201,20 @@ class TestRuns:
         # Ordered DESC by id.
         assert rows[0]["brief"] == "brief two"
         assert rows[1]["brief"] == "brief one"
+
+    def test_holdout_audit_roundtrips(self, store: Storage):
+        rid = store.create_run("b", "m")
+        payload = {
+            "primary_metric": "task_completion_rate",
+            "score": 100.0,
+            "audited_iter": 2,
+        }
+        store.save_holdout_audit(rid, score=100.0, passed=True, results=payload)
+        run = store.get_run(rid)
+        assert run["holdout_score"] == 100.0
+        assert run["holdout_passed"] is True
+        assert run["holdout_results"] == payload
+        assert run["holdout_evaluated_at"] is not None
 
     def test_create_returns_monotonic_ids(self, store: Storage):
         ids = [store.create_run(f"b{i}", "m") for i in range(3)]

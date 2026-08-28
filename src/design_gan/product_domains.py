@@ -26,6 +26,14 @@ class EvaluationPlan:
     minimum_effect: float
     tasks: tuple[BrowserTask, ...]
 
+    @property
+    def development_tasks(self) -> tuple[BrowserTask, ...]:
+        return tuple(task for task in self.tasks if task.split == "development")
+
+    @property
+    def holdout_tasks(self) -> tuple[BrowserTask, ...]:
+        return tuple(task for task in self.tasks if task.split == "holdout")
+
     def to_dict(self) -> dict[str, Any]:
         payload = asdict(self)
         payload["tasks"] = [task.to_dict() for task in self.tasks]
@@ -35,16 +43,40 @@ class EvaluationPlan:
 LANDING_PAGE = ProductDomain(
     id="landing-page",
     name="Landing page",
-    version=1,
+    version=2,
     tasks=(
         BrowserTask(
-            id="primary-action",
-            name="Primary action works",
+            id="landing-primary-desktop",
+            name="Primary action works with a pointer on desktop",
             instruction=(
                 "Find the page's primary call to action, activate it, and observe a "
                 "meaningful response such as navigation, scrolling, a dialog, a new "
                 "window, or changed visible content."
             ),
+            behavior="primary-action",
+            viewport=(1280, 800),
+        ),
+        BrowserTask(
+            id="landing-primary-keyboard",
+            name="Primary action works from the keyboard",
+            instruction=(
+                "Reach the primary call to action with keyboard focus, activate it with "
+                "Enter, and observe a meaningful response without runtime errors."
+            ),
+            behavior="primary-action",
+            viewport=(1280, 800),
+            interaction="keyboard",
+        ),
+        BrowserTask(
+            id="landing-primary-mobile-holdout",
+            name="Primary action remains usable on mobile",
+            instruction=(
+                "At a compact mobile viewport, find and activate the primary call to action "
+                "and observe a meaningful response without runtime errors."
+            ),
+            behavior="primary-action",
+            split="holdout",
+            viewport=(390, 844),
         ),
     ),
 )
@@ -52,21 +84,85 @@ LANDING_PAGE = ProductDomain(
 LEAD_GENERATION = ProductDomain(
     id="lead-generation",
     name="Lead-generation form",
-    version=1,
+    version=2,
     tasks=(
         BrowserTask(
-            id="form-completion",
-            name="Lead form can be completed",
+            id="lead-form-desktop",
+            name="Lead form can be completed on desktop",
             instruction=(
                 "Find the primary form, complete its required fields with valid sample "
                 "data, submit it, and observe a success response without runtime errors."
             ),
+            behavior="form-completion",
+            viewport=(1280, 800),
+        ),
+        BrowserTask(
+            id="lead-form-mobile",
+            name="Lead form can be completed on mobile",
+            instruction=(
+                "At a compact mobile viewport, complete and submit the primary lead form, "
+                "then observe an offline success response without runtime errors."
+            ),
+            behavior="form-completion",
+            viewport=(390, 844),
+        ),
+        BrowserTask(
+            id="lead-form-keyboard-holdout",
+            name="Lead form can be submitted from the keyboard",
+            instruction=(
+                "Complete the primary lead form and submit it from the keyboard, then "
+                "observe an offline success response without runtime errors."
+            ),
+            behavior="form-completion",
+            split="holdout",
+            viewport=(1280, 800),
+            interaction="keyboard",
+        ),
+    ),
+)
+
+STOREFRONT = ProductDomain(
+    id="storefront",
+    name="Single-product storefront",
+    version=1,
+    tasks=(
+        BrowserTask(
+            id="storefront-cart-desktop",
+            name="A product can be added to the cart on desktop",
+            instruction=(
+                "Find the primary product purchase action, activate it, and observe a "
+                "visible cart or bag state containing at least one item."
+            ),
+            behavior="cart-addition",
+            viewport=(1280, 800),
+        ),
+        BrowserTask(
+            id="storefront-cart-mobile",
+            name="A product can be added to the cart on mobile",
+            instruction=(
+                "At a compact mobile viewport, add the primary product to the cart and "
+                "observe a visible cart or bag state containing at least one item."
+            ),
+            behavior="cart-addition",
+            viewport=(390, 844),
+        ),
+        BrowserTask(
+            id="storefront-cart-keyboard-holdout",
+            name="The cart action works from the keyboard",
+            instruction=(
+                "Activate the primary add-to-cart action from the keyboard and observe a "
+                "visible cart or bag state containing at least one item."
+            ),
+            behavior="cart-addition",
+            split="holdout",
+            viewport=(1280, 800),
+            interaction="keyboard",
         ),
     ),
 )
 
 DOMAINS: dict[str, ProductDomain] = {
-    domain.id: domain for domain in (LANDING_PAGE, LEAD_GENERATION)
+    domain.id: domain for domain in (LANDING_PAGE, LEAD_GENERATION, STOREFRONT)
 }
 
 
@@ -96,7 +192,7 @@ def make_plan(
     return EvaluationPlan(
         domain=domain.id,
         domain_version=domain.version,
-        evaluator_version=2,
+        evaluator_version=3,
         trials_per_task=trials_per_task,
         promotion_alpha=promotion_alpha,
         minimum_effect=minimum_effect,
