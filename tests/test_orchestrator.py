@@ -225,6 +225,59 @@ class TestConvergence:
         assert saved[1]["promotion_wins"] == 6
         assert saved[1]["promotion_p_value"] == pytest.approx(0.015625)
 
+    def test_final_promoted_candidate_receives_one_untouched_holdout_audit(
+        self, cfg: orchestrator.LoopConfig, monkeypatch: pytest.MonkeyPatch
+    ):
+        cfg.max_iters = 1
+        cfg.patience = 1
+        fake = FakeRun(scores=[[3] * 10], task_scores=[100.0])
+        fake.install(monkeypatch)
+
+        result = orchestrator.run_loop_sync(cfg)
+        run = storage.Storage(cfg.db_path).get_run(result.run_id)
+
+        assert result.best_iter == 1
+        assert result.holdout_passed is True
+        assert result.holdout_score == 100.0
+        assert run["holdout_passed"] is True
+        assert run["holdout_results"]["audited_iter"] == 1
+        assert (cfg.runs_dir / "run_0001" / "holdout_evaluation.json").is_file()
+
+    def test_holdout_failure_does_not_reenter_the_search_loop(
+        self, cfg: orchestrator.LoopConfig, monkeypatch: pytest.MonkeyPatch
+    ):
+        cfg.max_iters = 1
+        cfg.patience = 1
+        fake = FakeRun(scores=[[3] * 10], task_scores=[100.0])
+        fake.install(monkeypatch)
+
+        async def split_evaluation(html, *, tasks, viewport=(1280, 800), trials_per_task=1):
+            task = tuple(tasks)[0]
+            passed = task.split == "development"
+            return browser_evaluator.EvaluationResult(
+                score=100.0 if passed else 0.0,
+                tasks=[
+                    browser_evaluator.TaskResult(
+                        task_id=task.id,
+                        name=task.name,
+                        instruction=task.instruction,
+                        passed=passed,
+                        target="target",
+                        trial=trial,
+                        split=task.split,
+                    )
+                    for trial in range(1, trials_per_task + 1)
+                ],
+            )
+
+        monkeypatch.setattr(orchestrator.browser_evaluator, "evaluate", split_evaluation)
+        result = orchestrator.run_loop_sync(cfg)
+
+        assert result.best_iter == 1
+        assert result.best_score == 100.0
+        assert result.holdout_passed is False
+        assert len(fake.generated_requests) == 1
+
     def test_converges_when_scores_plateau(
         self, cfg: orchestrator.LoopConfig, monkeypatch: pytest.MonkeyPatch
     ):

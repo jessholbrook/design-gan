@@ -44,6 +44,7 @@ PHASE_GENERATING = "generating"
 PHASE_RENDERING = "rendering"
 PHASE_EVALUATING = "evaluating"
 PHASE_CRITIQUING = "critiquing"
+PHASE_HOLDOUT = "holdout_audit"
 # Conversation runs replace the renderer phase with a multi-turn dialogue.
 PHASE_CONVERSING = "conversing"
 
@@ -88,6 +89,8 @@ class LoopResult:
     best_score: float | None
     iterations: int
     status: str  # "converged" | "exhausted" | "errored" | "budget_exhausted"
+    holdout_score: float | None = None
+    holdout_passed: bool | None = None
 
 
 @dataclass
@@ -134,7 +137,7 @@ def _design_evaluation_plan(cfg: LoopConfig) -> product_domains.EvaluationPlan:
     return product_domains.EvaluationPlan(
         domain="custom",
         domain_version=1,
-        evaluator_version=2,
+        evaluator_version=3,
         trials_per_task=cfg.evaluation_trials,
         promotion_alpha=cfg.promotion_alpha,
         minimum_effect=cfg.tolerance,
@@ -183,13 +186,14 @@ async def _design_iterate(
     # the critic's SUS opinion.
     store.update_progress(run_id, i, PHASE_EVALUATING)
     plan = _design_evaluation_plan(cfg)
+    development_tasks = plan.development_tasks or plan.tasks
     console.print(
-        f"[dim]evaluating ({len(plan.tasks)} frozen browser task(s), "
+        f"[dim]evaluating ({len(development_tasks)} frozen development task(s), "
         f"{plan.trials_per_task} trial(s) each)...[/dim]"
     )
     evaluation = await browser_evaluator.evaluate(
         html,
-        tasks=plan.tasks,
+        tasks=development_tasks,
         viewport=cfg.viewport,
         trials_per_task=plan.trials_per_task,
     )
@@ -239,6 +243,11 @@ async def _design_iterate(
             task_suggestion = (
                 "Make the primary lead form discoverable and completable with labeled, valid "
                 "fields; submission must show an offline success state without runtime errors."
+            )
+        elif plan.domain == "storefront":
+            task_suggestion = (
+                "Make the primary product purchase action obvious and keyboard-accessible; "
+                "activation must visibly update an offline cart or bag to at least one item."
             )
         else:
             task_suggestion = (
@@ -386,6 +395,8 @@ async def _run_shared_loop(
 
     status = "exhausted"
     final_error: str | None = None
+    holdout_score: float | None = None
+    holdout_passed: bool | None = None
     i = 0
 
     try:
@@ -531,6 +542,50 @@ async def _run_shared_loop(
         console.print(f"[red]run errored: {e}[/red]")
         console.print(traceback.format_exc())
     finally:
+        if (
+            kind == KIND_DESIGN
+            and design_plan is not None
+            and design_plan.holdout_tasks
+            and best.artifact is not None
+        ):
+            store.update_progress(run_id, best.iter, PHASE_HOLDOUT)
+            console.print(
+                f"[dim]auditing final candidate on {len(design_plan.holdout_tasks)} "
+                "untouched holdout scenario(s)...[/dim]"
+            )
+            try:
+                holdout = await browser_evaluator.evaluate(
+                    best.artifact,
+                    tasks=design_plan.holdout_tasks,
+                    viewport=cfg.viewport,
+                    trials_per_task=design_plan.trials_per_task,
+                )
+                holdout_score = holdout.score
+                holdout_passed = holdout.passed == holdout.total and not holdout.correctness_errors
+                holdout_payload = holdout.to_dict()
+                holdout_payload["audited_iter"] = best.iter
+                browser_evaluator.write_artifact(
+                    holdout,
+                    run_dir,
+                    filename="holdout_evaluation.json",
+                )
+            except Exception as exc:  # noqa: BLE001 - persist a failed audit as evidence
+                holdout_passed = False
+                holdout_payload = {
+                    "primary_metric": "task_completion_rate",
+                    "audited_iter": best.iter,
+                    "error": f"{type(exc).__name__}: {exc}",
+                }
+            store.save_holdout_audit(
+                run_id,
+                score=holdout_score,
+                passed=holdout_passed,
+                results=holdout_payload,
+            )
+            console.print(
+                f"[dim]holdout:[/dim] {'PASS' if holdout_passed else 'FAIL'}"
+                + (f" score={holdout_score:.1f}" if holdout_score is not None else "")
+            )
         # If no iteration ever completed, persist nulls rather than a sentinel
         # 0/0.0 that the UI would otherwise render as a real score.
         final_best_iter = best_iter if best_iter > 0 else None
@@ -542,6 +597,8 @@ async def _run_shared_loop(
         best_score=best_score,
         iterations=i,
         status=status,
+        holdout_score=holdout_score,
+        holdout_passed=holdout_passed,
     )
 
 

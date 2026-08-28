@@ -16,6 +16,7 @@
   let idx = 0;
   let bestIdx = 0;
   let hasPromotedBest = false;
+  let runMeta = {};
   let mode = 'single'; // 'single' | 'prev' | 'best' (design runs only)
   let split = 0.5; // compare divider fraction, persists across iterations
   const transcriptCache = new Map();
@@ -288,6 +289,11 @@
         }
       </div>
       ${taskResults(it)}
+      ${runMeta.holdout_passed == null ? '' :
+        `<p class="scrub-feedback"><b>Final untouched holdout: ${
+          runMeta.holdout_passed ? 'PASS' : 'FAIL'
+        }</b>${runMeta.holdout_score == null ? '' :
+          ` · score ${Number(runMeta.holdout_score).toFixed(0)}`}</p>`}
       ${askedToFix()}
       <h3>Critic feedback</h3>
       <p class="scrub-feedback">${escapeHtml(it.feedback)}</p>
@@ -386,6 +392,7 @@
   fetch(`/api/runs/${runId}`)
     .then((r) => (r.ok ? r.json() : Promise.reject(new Error('run not found'))))
     .then((data) => {
+      runMeta = data.run || {};
       iters = (data.iterations || []).slice().sort((a, b) => a.iter - b.iter);
       if (!iters.length) {
         stageEl.innerHTML =

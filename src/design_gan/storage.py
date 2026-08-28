@@ -32,6 +32,10 @@ CREATE TABLE IF NOT EXISTS runs (
     evaluation_suite TEXT,        -- frozen JSON browser scenarios for design runs
     evaluation_plan TEXT,         -- versioned frozen evaluator + promotion policy
     artifact_policy TEXT,         -- versioned mutable-artifact boundary
+    holdout_score REAL,
+    holdout_passed INTEGER,
+    holdout_results TEXT,
+    holdout_evaluated_at REAL,
     error TEXT
 );
 
@@ -125,6 +129,10 @@ class Storage:
             ("evaluation_suite", "TEXT"),
             ("evaluation_plan", "TEXT"),
             ("artifact_policy", "TEXT"),
+            ("holdout_score", "REAL"),
+            ("holdout_passed", "INTEGER"),
+            ("holdout_results", "TEXT"),
+            ("holdout_evaluated_at", "REAL"),
             ("error", "TEXT"),
             ("kind", "TEXT NOT NULL DEFAULT 'design'"),
         ):
@@ -246,6 +254,21 @@ class Storage:
                 (current_iter, current_phase, time.time(), run_id),
             )
 
+    def save_holdout_audit(
+        self,
+        run_id: int,
+        *,
+        score: float | None,
+        passed: bool,
+        results: dict[str, Any],
+    ) -> None:
+        with self._conn() as c:
+            c.execute(
+                "UPDATE runs SET holdout_score=?, holdout_passed=?, holdout_results=?, "
+                "holdout_evaluated_at=? WHERE id=?",
+                (score, int(passed), json.dumps(results), time.time(), run_id),
+            )
+
     def save_iteration(self, rec: IterationRecord) -> None:
         breakdown_json = (
             json.dumps(rec.critic_breakdown) if rec.critic_breakdown is not None else None
@@ -318,9 +341,16 @@ class Storage:
 
     @staticmethod
     def _decode_run(run: dict[str, Any]) -> dict[str, Any]:
-        for key in ("evaluation_suite", "evaluation_plan", "artifact_policy"):
+        for key in (
+            "evaluation_suite",
+            "evaluation_plan",
+            "artifact_policy",
+            "holdout_results",
+        ):
             if run.get(key):
                 run[key] = json.loads(run[key])
+        if run.get("holdout_passed") is not None:
+            run["holdout_passed"] = bool(run["holdout_passed"])
         return run
 
     def iterations_for_run(self, run_id: int, after_iter: int = 0) -> list[dict[str, Any]]:

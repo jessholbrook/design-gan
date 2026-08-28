@@ -61,13 +61,37 @@ candidates; correctness and accessibility remain hard promotion gates.
 
 All criteria above are met by `codex/product-optimization-roadmap`.
 
+## Evaluator-rigor follow-on — complete
+
+1. **Recorded validity benchmark**
+   - Added a labeled Chromium corpus covering expected passes and failures,
+     distractor forms, mobile visibility, keyboard activation, and cart-state
+     false positives.
+   - The semantic-v3 actor scores 13/13 on corpus v2. The recorded report is
+     `docs/evaluator-benchmark-semantic-v3.json`.
+   - A model-driven actor remains outside the north-star path: it cannot show
+     better validity on the current corpus, and would add cost and variance.
+2. **Controlled scenario variations**
+   - Domain profiles now freeze concrete pointer/keyboard and desktop/mobile
+     conditions rather than treating identical reruns as distinct scenarios.
+   - Trials still repeat each condition to detect runtime instability.
+3. **Non-adaptive holdout audit**
+   - Two development scenarios drive iteration feedback and promotion.
+   - One holdout scenario is omitted from generator feedback and runs exactly
+     once against the final promoted artifact.
+   - Holdout score, pass/fail, evidence, timestamp, and audited iteration are
+     persisted on the run and shown in the viewer and scrubber.
+4. **Third concrete domain**
+   - Added a single-product storefront profile whose north star is successful
+     add-to-cart completion with visible cart evidence.
+   - Generic visual change does not count as cart completion.
+
 ## Next research decisions
 
-- Benchmark semantic automation against a model-driven browser actor before
-  introducing actor non-determinism into the north-star metric.
-- Add controlled scenario variations only when they represent distinct user
-  conditions rather than duplicate deterministic observations.
-- Design holdout suites once each domain has enough scenarios to split without
-  making either the development or holdout signal uninformative.
-- Add another product domain only with a concrete bounded artifact and one
-  defensible behavioral north-star; do not generalize the evaluator first.
+- Grow the labeled benchmark with failures observed in real generated runs;
+  reconsider a model actor only if it beats the semantic baseline on a future
+  corpus while meeting cost and repeatability budgets.
+- Calibrate trial count and significance thresholds from empirical flake rates
+  rather than treating six trials as permanently optimal.
+- Add a cross-run incumbent/holdout ledger so a new run can challenge a
+  previously verified artifact without reusing its development feedback.

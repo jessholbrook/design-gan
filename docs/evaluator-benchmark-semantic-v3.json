@@ -1,0 +1,22 @@
+{
+  "corpus_version": 2,
+  "actor": "semantic-v3",
+  "correct": 13,
+  "total": 13,
+  "accuracy": 1.0,
+  "results": [
+    {"id": "landing-marked-action", "domain": "landing-page", "expected_pass": true, "actual_pass": true, "correct": true, "score": 100.0, "errors": []},
+    {"id": "landing-keyboard-action", "domain": "landing-page", "expected_pass": true, "actual_pass": true, "correct": true, "score": 100.0, "errors": []},
+    {"id": "landing-no-response", "domain": "landing-page", "expected_pass": false, "actual_pass": false, "correct": true, "score": 0.0, "errors": []},
+    {"id": "landing-disabled-action", "domain": "landing-page", "expected_pass": false, "actual_pass": false, "correct": true, "score": 0.0, "errors": []},
+    {"id": "landing-mobile-hidden-action", "domain": "landing-page", "expected_pass": false, "actual_pass": false, "correct": true, "score": 0.0, "errors": []},
+    {"id": "lead-marked-form", "domain": "lead-generation", "expected_pass": true, "actual_pass": true, "correct": true, "score": 100.0, "errors": []},
+    {"id": "lead-primary-among-distractors", "domain": "lead-generation", "expected_pass": true, "actual_pass": true, "correct": true, "score": 100.0, "errors": []},
+    {"id": "lead-keyboard-form", "domain": "lead-generation", "expected_pass": true, "actual_pass": true, "correct": true, "score": 100.0, "errors": []},
+    {"id": "lead-no-success-state", "domain": "lead-generation", "expected_pass": false, "actual_pass": false, "correct": true, "score": 0.0, "errors": []},
+    {"id": "lead-missing-form", "domain": "lead-generation", "expected_pass": false, "actual_pass": false, "correct": true, "score": 0.0, "errors": []},
+    {"id": "storefront-cart-state", "domain": "storefront", "expected_pass": true, "actual_pass": true, "correct": true, "score": 100.0, "errors": []},
+    {"id": "storefront-keyboard-cart", "domain": "storefront", "expected_pass": true, "actual_pass": true, "correct": true, "score": 100.0, "errors": []},
+    {"id": "storefront-generic-change", "domain": "storefront", "expected_pass": false, "actual_pass": false, "correct": true, "score": 0.0, "errors": []}
+  ]
+}

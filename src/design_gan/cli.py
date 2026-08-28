@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import os
 from pathlib import Path
 
@@ -10,7 +11,7 @@ from dotenv import load_dotenv
 from rich.console import Console
 from rich.table import Table
 
-from . import orchestrator, product_domains, storage
+from . import evaluator_benchmark, orchestrator, product_domains, storage
 
 app = typer.Typer(add_completion=False, help="Autoresearch-style design evolution loop.")
 console = Console()
@@ -41,7 +42,8 @@ def run(
     model: str = typer.Option(None, help="Override the Claude model ID."),
     runs_dir: Path = typer.Option(None, help="Where to store per-iteration artifacts."),
     domain: str = typer.Option(
-        "landing-page", help="Frozen product domain: landing-page or lead-generation."
+        "landing-page",
+        help="Frozen product domain: landing-page, lead-generation, or storefront.",
     ),
     evaluation_trials: int = typer.Option(
         6, min=1, max=50, help="Repeated browser trials per frozen task."
@@ -76,8 +78,38 @@ def run(
     console.print(
         f"run_id={result.run_id}  best_iter={best_iter_txt}  "
         f"best_score={best_score_txt}  iters={result.iterations}  "
-        f"status={result.status}"
+        f"status={result.status}  "
+        f"holdout={('pass' if result.holdout_passed else 'fail') if result.holdout_passed is not None else 'n/a'}"
     )
+
+
+@app.command("benchmark-evaluator")
+def benchmark_evaluator(
+    json_out: Path = typer.Option(None, help="Optional path for the machine-readable report."),
+) -> None:
+    """Run the labeled Chromium validity corpus against the semantic actor."""
+    report = asyncio.run(evaluator_benchmark.run_benchmark())
+    table = Table(title=f"Evaluator benchmark · {report.actor}")
+    for column in ("case", "domain", "expected", "actual", "result"):
+        table.add_column(column)
+    for result in report.results:
+        table.add_row(
+            result.id,
+            result.domain,
+            "pass" if result.expected_pass else "fail",
+            "pass" if result.actual_pass else "fail",
+            "correct" if result.correct else "MISS",
+        )
+    console.print(table)
+    console.print(
+        f"accuracy={report.accuracy:.1%} ({report.correct}/{report.total}) "
+        f"corpus=v{report.corpus_version}"
+    )
+    if json_out is not None:
+        report.write(json_out)
+        console.print(f"report={json_out}")
+    if report.correct != report.total:
+        raise typer.Exit(1)
 
 
 @app.command()
@@ -93,7 +125,7 @@ def list_runs(
         console.print("[yellow]No runs yet.[/yellow]")
         return
     table = Table(title="Runs")
-    for col in ("id", "brief", "model", "best_iter", "best_score", "status"):
+    for col in ("id", "brief", "model", "best_iter", "best_score", "holdout", "status"):
         table.add_column(col)
     for r in rows:
         table.add_row(
@@ -102,6 +134,11 @@ def list_runs(
             r["model"],
             str(r["best_iter"]) if r["best_iter"] is not None else "-",
             f"{r['best_score']:.1f}" if r["best_score"] is not None else "-",
+            (
+                "pass"
+                if r.get("holdout_passed") is True
+                else ("fail" if r.get("holdout_passed") is False else "-")
+            ),
             r["status"],
         )
     console.print(table)
@@ -170,6 +207,10 @@ def export(
         rec = max(iters, key=lambda x: x["composite_score"])
 
     kind = run.get("kind") or "design"
+    if kind == "design" and run.get("holdout_passed") is False:
+        console.print(
+            "[yellow]Warning: this run failed its final untouched holdout audit.[/yellow]"
+        )
     suffix = ".html" if kind == "design" else ".txt"
     out = out or Path(f"run_{run_id:04d}_best{suffix}")
     out.write_text(rec["html"], encoding="utf-8")

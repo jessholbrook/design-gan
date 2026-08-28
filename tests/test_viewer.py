@@ -186,8 +186,13 @@ class TestJsonApi:
         assert {domain["id"] for domain in domains} == {
             "landing-page",
             "lead-generation",
+            "storefront",
         }
-        assert all(domain["version"] == 1 for domain in domains)
+        assert {domain["id"]: domain["version"] for domain in domains} == {
+            "landing-page": 2,
+            "lead-generation": 2,
+            "storefront": 1,
+        }
 
     def test_api_unknown_run_is_404(self, client: TestClient):
         r = client.get("/api/runs/999")
@@ -235,7 +240,17 @@ class TestStartRunValidation:
         run_id = response.json()["run_id"]
         run = client.get(f"/api/runs/{run_id}").json()["run"]
         assert run["domain"] == "lead-generation"
-        assert [task["id"] for task in run["evaluation_plan"]["tasks"]] == ["form-completion"]
+        tasks = run["evaluation_plan"]["tasks"]
+        assert [task["id"] for task in tasks] == [
+            "lead-form-desktop",
+            "lead-form-mobile",
+            "lead-form-keyboard-holdout",
+        ]
+        assert [task["split"] for task in tasks] == [
+            "development",
+            "development",
+            "holdout",
+        ]
         assert run["evaluation_plan"]["trials_per_task"] == 8
         assert run["evaluation_plan"]["promotion_alpha"] == pytest.approx(0.1)
 
@@ -280,7 +295,11 @@ class TestStartTokenGate:
         assert r.status_code == 200
         run_id = r.json()["run_id"]
         run = gated_client.get(f"/api/runs/{run_id}").json()["run"]
-        assert [task["id"] for task in run["evaluation_suite"]] == ["primary-action"]
+        assert [task["id"] for task in run["evaluation_suite"]] == [
+            "landing-primary-desktop",
+            "landing-primary-keyboard",
+            "landing-primary-mobile-holdout",
+        ]
         assert run["evaluation_plan"]["trials_per_task"] == 6
         assert run["evaluation_plan"]["promotion_alpha"] == pytest.approx(0.05)
         assert run["artifact_policy"]["kind"] == "standalone-html"
@@ -288,6 +307,20 @@ class TestStartTokenGate:
         detail = gated_client.get(f"/runs/{run_id}").text
         assert "Frozen browser tasks" in detail
         assert "best task score" in detail
+
+    def test_final_holdout_status_is_visible_in_run_and_scrubber(self, gated_client: TestClient):
+        from design_gan import viewer
+
+        viewer._store().save_holdout_audit(
+            1,
+            score=50.0,
+            passed=False,
+            results={"score": 50.0, "audited_iter": 4},
+        )
+        detail = gated_client.get("/runs/1")
+        scrub_js = gated_client.get("/static/scrub.js")
+        assert "Final untouched holdout: FAIL" in detail.text
+        assert "Final untouched holdout" in scrub_js.text
 
     def test_bearer_header_accepted(
         self, gated_client: TestClient, monkeypatch: pytest.MonkeyPatch

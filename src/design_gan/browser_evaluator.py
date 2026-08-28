@@ -29,8 +29,12 @@ class BrowserTask:
     id: str
     name: str
     instruction: str
+    behavior: str | None = None
+    split: str = "development"
+    viewport: tuple[int, int] | None = None
+    interaction: str = "pointer"
 
-    def to_dict(self) -> dict[str, str]:
+    def to_dict(self) -> dict[str, Any]:
         return asdict(self)
 
 
@@ -57,6 +61,9 @@ class TaskResult:
     passed: bool
     target: str | None
     trial: int = 1
+    split: str = "development"
+    interaction: str = "pointer"
+    viewport: tuple[int, int] | None = None
     observed: list[str] = field(default_factory=list)
     errors: list[str] = field(default_factory=list)
 
@@ -111,6 +118,11 @@ _CTA_WORDS = re.compile(
     r"request|try|subscribe|register|apply|schedule|learn more|explore)\b",
     re.IGNORECASE,
 )
+_CART_ACTION_WORDS = re.compile(r"\b(add to (?:cart|bag)|buy now)\b", re.IGNORECASE)
+_CART_EVIDENCE = re.compile(
+    r"\b(added to (?:cart|bag)|in your (?:cart|bag)|(?:cart|bag)\s*[:(]?\s*[1-9])",
+    re.IGNORECASE,
+)
 
 
 def frozen_suite(tasks: Iterable[BrowserTask] | None = None) -> tuple[BrowserTask, ...]:
@@ -121,10 +133,18 @@ def frozen_suite(tasks: Iterable[BrowserTask] | None = None) -> tuple[BrowserTas
     ids = [task.id for task in suite]
     if len(ids) != len(set(ids)):
         raise ValueError("browser task ids must be unique")
-    supported = {"primary-action", "form-completion"}
-    unsupported = [task.id for task in suite if task.id not in supported]
+    supported = {"primary-action", "form-completion", "cart-addition"}
+    unsupported = [task.id for task in suite if (task.behavior or task.id) not in supported]
     if unsupported:
         raise ValueError(f"unsupported browser task(s): {', '.join(unsupported)}")
+    invalid_splits = [task.id for task in suite if task.split not in {"development", "holdout"}]
+    if invalid_splits:
+        raise ValueError(f"invalid browser task split(s): {', '.join(invalid_splits)}")
+    invalid_interactions = [
+        task.id for task in suite if task.interaction not in {"pointer", "keyboard"}
+    ]
+    if invalid_interactions:
+        raise ValueError(f"invalid browser task interaction(s): {', '.join(invalid_interactions)}")
     return suite
 
 
@@ -149,6 +169,37 @@ def _candidate_score(candidate: dict[str, Any]) -> int:
         score += 5
     # Prefer prominent controls when semantic signals tie.
     score += min(20, int((candidate.get("width", 0) * candidate.get("height", 0)) / 1000))
+    return score
+
+
+def _cart_candidate_score(candidate: dict[str, Any]) -> int:
+    score = _candidate_score(candidate)
+    text = str(candidate.get("text") or "")
+    attrs = " ".join(
+        str(candidate.get(key) or "") for key in ("className", "id", "ariaLabel")
+    ).lower()
+    if _CART_ACTION_WORDS.search(text):
+        score += 100
+    if "cart" in attrs or "bag" in attrs:
+        score += 60
+    return score
+
+
+def _form_score(candidate: dict[str, Any]) -> int:
+    """Prefer an explicitly marked or clearly primary lead form."""
+    attrs = " ".join(
+        str(candidate.get(key) or "") for key in ("className", "id", "ariaLabel", "dataPrimary")
+    ).lower()
+    submit_text = str(candidate.get("submitText") or "")
+    score = min(30, int(candidate.get("fieldCount") or 0) * 5)
+    if candidate.get("dataPrimary") is not None:
+        score += 100
+    if any(word in attrs for word in ("primary", "lead", "contact", "signup", "register")):
+        score += 50
+    if _CTA_WORDS.search(submit_text):
+        score += 30
+    if candidate.get("hasSearch"):
+        score -= 100
     return score
 
 
@@ -205,7 +256,9 @@ async def _primary_action(page: Any, task: BrowserTask) -> TaskResult:
             observed=["no visible interactive control was available"],
         )
 
-    candidate = max(visible, key=_candidate_score)
+    behavior = task.behavior or task.id
+    score_candidate = _cart_candidate_score if behavior == "cart-addition" else _candidate_score
+    candidate = max(visible, key=score_candidate)
     label = candidate.get("text") or candidate.get("ariaLabel") or candidate.get("tag")
     if candidate.get("disabled"):
         return TaskResult(
@@ -223,12 +276,18 @@ async def _primary_action(page: Any, task: BrowserTask) -> TaskResult:
     before_scroll = await page.evaluate("() => window.scrollY")
     errors: list[str] = []
     try:
-        await target.click(timeout=3000, no_wait_after=True)
+        if task.interaction == "keyboard":
+            await target.focus()
+            await page.keyboard.press("Enter")
+        else:
+            await target.click(timeout=3000, no_wait_after=True)
         await page.wait_for_timeout(350)
     except Exception as exc:  # noqa: BLE001 - action failures are recorded as evidence
         errors.append(f"activation failed: {type(exc).__name__}: {exc}")
 
     observed: list[str] = []
+    after_url = before_url
+    after_text = before_text
     try:
         if not page.is_closed():
             after_url = page.url
@@ -249,9 +308,20 @@ async def _primary_action(page: Any, task: BrowserTask) -> TaskResult:
 
     runtime_errors = [*page_errors, *console_errors]
     errors.extend(runtime_errors)
-    passed = bool(observed) and not errors
-    if not observed and not errors:
-        observed.append("activation produced no observable response")
+    if behavior == "cart-addition":
+        cart_evidence = []
+        if _CART_EVIDENCE.search(after_text) and after_text != before_text:
+            cart_evidence.append("visible cart state changed")
+        if _CART_EVIDENCE.search(after_url) and after_url != before_url:
+            cart_evidence.append("navigated to cart state")
+        observed = cart_evidence
+        passed = bool(cart_evidence) and not errors
+        if not cart_evidence and not errors:
+            observed.append("activation produced no observable cart state")
+    else:
+        passed = bool(observed) and not errors
+        if not observed and not errors:
+            observed.append("activation produced no observable response")
     return TaskResult(
         task_id=task.id,
         name=task.name,
@@ -282,11 +352,30 @@ async def _form_completion(page: Any, task: BrowserTask) -> TaskResult:
     page.context.on("page", lambda popup: popups.append(popup.url))
 
     forms = page.locator("form")
-    visible_forms = []
-    for index in range(await forms.count()):
-        form = forms.nth(index)
-        if await form.is_visible():
-            visible_forms.append(form)
+    candidates: list[dict[str, Any]] = await forms.evaluate_all(
+        """forms => forms.map((form, index) => {
+          const r = form.getBoundingClientRect();
+          const style = getComputedStyle(form);
+          const submit = form.querySelector(
+            'button[type=submit], input[type=submit], button:not([type])'
+          );
+          return {
+            index,
+            id: form.id || '',
+            className: typeof form.className === 'string' ? form.className : '',
+            ariaLabel: form.getAttribute('aria-label'),
+            dataPrimary: form.getAttribute('data-primary-action'),
+            fieldCount: form.querySelectorAll('input:not([type=hidden]), textarea, select').length,
+            hasSearch: Boolean(form.querySelector('input[type=search]')) ||
+                       form.getAttribute('role') === 'search',
+            submitText: submit ?
+              (submit.innerText || submit.value || submit.getAttribute('aria-label') || '') : '',
+            visible: r.width > 0 && r.height > 0 && style.visibility !== 'hidden' &&
+                     style.display !== 'none' && Number(style.opacity) !== 0,
+          };
+        })"""
+    )
+    visible_forms = [candidate for candidate in candidates if candidate["visible"]]
     if not visible_forms:
         return TaskResult(
             task_id=task.id,
@@ -297,7 +386,8 @@ async def _form_completion(page: Any, task: BrowserTask) -> TaskResult:
             observed=["no visible form was available"],
         )
 
-    form = visible_forms[0]
+    selected = max(visible_forms, key=_form_score)
+    form = forms.nth(selected["index"])
     label = (await form.get_attribute("aria-label")) or (await form.get_attribute("id")) or "form"
     fields = form.locator("input, textarea, select")
     errors: list[str] = []
@@ -340,7 +430,11 @@ async def _form_completion(page: Any, task: BrowserTask) -> TaskResult:
     submit = form.locator("button[type=submit], input[type=submit], button:not([type])").first
     try:
         if await submit.count() and await submit.is_visible():
-            await submit.click(timeout=3000, no_wait_after=True)
+            if task.interaction == "keyboard":
+                await submit.focus()
+                await page.keyboard.press("Enter")
+            else:
+                await submit.click(timeout=3000, no_wait_after=True)
         else:
             await form.evaluate("el => el.requestSubmit()")
         await page.wait_for_timeout(350)
@@ -399,19 +493,23 @@ async def evaluate(
         try:
             for task in suite:
                 for trial in range(1, trials_per_task + 1):
+                    task_viewport = task.viewport or viewport
                     context = await browser.new_context(
-                        viewport={"width": viewport[0], "height": viewport[1]}
+                        viewport={"width": task_viewport[0], "height": task_viewport[1]}
                     )
                     await context.route("**/*", lambda route: route.abort())
                     page = await context.new_page()
                     try:
                         await page.set_content(html, wait_until="domcontentloaded")
                         await page.wait_for_timeout(300)
-                        if task.id == "primary-action":
+                        if (task.behavior or task.id) in {"primary-action", "cart-addition"}:
                             result = await _primary_action(page, task)
                         else:
                             result = await _form_completion(page, task)
                         result.trial = trial
+                        result.split = task.split
+                        result.interaction = task.interaction
+                        result.viewport = task_viewport
                         results.append(result)
                     except Exception as exc:  # noqa: BLE001 - isolate each frozen task
                         results.append(
@@ -422,6 +520,9 @@ async def evaluate(
                                 passed=False,
                                 target=None,
                                 trial=trial,
+                                split=task.split,
+                                interaction=task.interaction,
+                                viewport=task_viewport,
                                 errors=[f"evaluator failed: {type(exc).__name__}: {exc}"],
                             )
                         )
@@ -439,8 +540,12 @@ async def evaluate(
     )
 
 
-def write_artifact(result: EvaluationResult, out_dir: Path) -> Path:
+def write_artifact(
+    result: EvaluationResult,
+    out_dir: Path,
+    filename: str = "evaluation.json",
+) -> Path:
     out_dir.mkdir(parents=True, exist_ok=True)
-    path = out_dir / "evaluation.json"
+    path = out_dir / filename
     path.write_text(json.dumps(result.to_dict(), indent=2), encoding="utf-8")
     return path

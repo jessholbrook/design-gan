@@ -13,7 +13,14 @@ def test_help_shows_commands():
     runner = CliRunner()
     r = runner.invoke(app, ["--help"])
     assert r.exit_code == 0
-    for cmd in ("run", "list-runs", "demo", "viewer", "export"):
+    for cmd in (
+        "run",
+        "benchmark-evaluator",
+        "list-runs",
+        "demo",
+        "viewer",
+        "export",
+    ):
         assert cmd in r.output
 
 
