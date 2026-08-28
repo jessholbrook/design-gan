@@ -197,6 +197,7 @@ def _new_run_form() -> str:
         <select name="design_domain">
           <option value="landing-page">Landing page — primary action</option>
           <option value="lead-generation">Lead generation — complete form</option>
+          <option value="storefront">Storefront — add product to cart</option>
         </select>
       </label>
       <label>Trials per task
@@ -355,7 +356,8 @@ def run_detail(run_id: int) -> str:
         plan = run.get("evaluation_plan") or {}
         plan_tasks = plan.get("tasks") or run.get("evaluation_suite") or []
         tasks = "".join(
-            f"<li>{html.escape(task.get('name') or task.get('id') or 'task')}: "
+            f"<li><b>{html.escape(task.get('split') or 'development')}</b> · "
+            f"{html.escape(task.get('name') or task.get('id') or 'task')}: "
             f"{html.escape(task.get('instruction') or '')}</li>"
             for task in plan_tasks
         )
@@ -373,6 +375,15 @@ def run_detail(run_id: int) -> str:
         suite_html = (
             '<details class="run-evaluation-suite"><summary>Frozen browser tasks</summary>'
             f"{plan_meta}{policy_meta}<ul>{tasks}</ul></details>"
+        )
+    holdout_html = ""
+    if kind == "design" and run.get("holdout_passed") is not None:
+        holdout_passed = bool(run["holdout_passed"])
+        holdout_score = run.get("holdout_score")
+        holdout_score_text = f" · score {holdout_score:.0f}" if holdout_score is not None else ""
+        holdout_html = (
+            '<p class="run-holdout"><b>Final untouched holdout: '
+            f"{'PASS' if holdout_passed else 'FAIL'}</b>{holdout_score_text}</p>"
         )
     cards = "".join(_iter_card_html(run_id, it, kind=kind) for it in iters)
 
@@ -413,10 +424,13 @@ def run_detail(run_id: int) -> str:
             <b id="stat-best-score" class="{_score_class(best_score)}">{best_score_txt}</b></div>
           <div><span class="muted">iterations</span>
             <b id="stat-iter-count">{len(iters)}</b></div>
+          <div><span class="muted">holdout</span>
+            <b>{"pass" if run.get("holdout_passed") is True else ("fail" if run.get("holdout_passed") is False else "—")}</b></div>
         </div>
       </div>
       <p class="brief">{html.escape(run["brief"])}</p>
       {suite_html}
+      {holdout_html}
       {error_html}
       <div class="chart-wrap">
         <svg id="score-chart" viewBox="0 0 800 220" preserveAspectRatio="none"></svg>
@@ -580,7 +594,10 @@ class StartRunRequest(BaseModel):
     token: str | None = None  # required iff DESIGN_GAN_START_TOKEN is set
     kind: str = Field(default="design", pattern="^(design|conversation)$")
     max_conversation_turns: int = Field(default=5, ge=1, le=10)
-    design_domain: str = Field(default="landing-page", pattern="^(landing-page|lead-generation)$")
+    design_domain: str = Field(
+        default="landing-page",
+        pattern="^(landing-page|lead-generation|storefront)$",
+    )
     evaluation_trials: int = Field(default=6, ge=1, le=50)
     promotion_alpha: float = Field(default=0.05, gt=0.0, le=1.0)
 

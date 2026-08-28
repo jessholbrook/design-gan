@@ -27,13 +27,15 @@ critic ──► SUS + feedback (diagnostic) ───────────�
 - **`renderer.py`** — Playwright headless Chromium: screenshot, DOM, axe-core
   (vendored into the package, so renders are deterministic and offline-safe).
 - **`product_domains.py`** — materializes a versioned evaluation plan before a
-  run starts. The current concrete profiles are landing-page primary-action and
-  lead-generation form-completion.
+  run starts. The concrete profiles are landing-page primary-action,
+  lead-generation form-completion, and storefront add-to-cart completion.
 - **`artifact_policy.py`** — enforces the versioned mutable boundary: one
   complete, standalone, offline HTML document no larger than 512 KiB.
-- **`browser_evaluator.py`** — replays the run's frozen browser scenario for a
-  configured number of isolated trials and records pass/fail evidence plus
-  runtime errors.
+- **`browser_evaluator.py`** — replays frozen development scenarios across
+  pointer/keyboard and desktop/mobile conditions for isolated trials, then runs
+  one untouched holdout scenario against the final promoted artifact.
+- **`evaluator_benchmark.py`** — runs a labeled Chromium validity corpus without
+  connecting experimental actors to the optimization loop.
 - **`critic.py`** — Claude scores the screenshot on the 10-item SUS (Likert 1-5)
   and returns prioritized suggestions. SUS is feedback, not the design
   north-star. The response contract is a fenced JSON block validated against a
@@ -73,6 +75,9 @@ design-gan viewer  # http://127.0.0.1:8000
 design-gan run "A landing page for a weekend cycling tour in rural Vermont."
 design-gan run "Collect demo requests for a B2B analytics product." \
   --domain lead-generation --evaluation-trials 8 --promotion-alpha 0.05
+design-gan run "A single-product storefront for a lightweight travel mug." \
+  --domain storefront
+design-gan benchmark-evaluator
 design-gan list-runs
 
 # Write the best iteration's HTML (or system prompt, for conversation runs) to a file
@@ -148,7 +153,7 @@ pip install -e ".[dev]"
 pytest
 ```
 
-239 tests covering the browser-evaluator and artifact contracts, primary
+250 tests covering the browser-evaluator and artifact contracts, primary
 scoring, paired promotion decisions, storage (schema + migration), the extractor
 helpers, the orchestrator loop (with generator/critic/renderer faked), the
 viewer's HTTP endpoints (including the scrubber route), and the CLI.
@@ -164,7 +169,7 @@ viewer's HTTP endpoints (including the scrubber route), and the CLI.
   browser/runtime correctness errors, artifact boundary violations, and axe
   execution failures block promotion even when task completion is high.
   Blocked candidates remain in history for diagnosis.
-- **Frozen run contracts.** Domain/version, scenarios, trial count, promotion
+- **Frozen run contracts.** Domain/version, scenario split and conditions, trial count, promotion
   threshold, minimum effect, and artifact policy are materialized once on the
   run record and replayed unchanged. Each iteration writes `evaluation.json`
   alongside `site.html`, `screenshot.png`, `dom.html`, and `axe.json`.
@@ -172,6 +177,12 @@ viewer's HTTP endpoints (including the scrubber route), and the CLI.
   contexts. A candidate must improve enough and its paired binary outcomes must
   clear the configured one-sided sign test. The p-value, comparable trials,
   wins, losses, effect, reason, and parent iteration are persisted.
+- **Untouched final holdout.** Development scenarios drive the adaptive loop.
+  The holdout is not included in generator feedback and runs once against the
+  final promoted artifact; it is an audit, not another tuning signal.
+- **Actor admission is evidence-based.** The recorded semantic-v3 baseline is
+  13/13 on labeled corpus v2. A model-driven actor is not used because it cannot
+  currently demonstrate better validity and would add cost and variance.
 - **Convergence.** "No further improvements" is operationalized as
   `patience` iterations without an eligible primary-score gain of at least
   `tolerance` points.
@@ -187,12 +198,12 @@ viewer's HTTP endpoints (including the scrubber route), and the CLI.
 ### Evaluator boundary and roadmap
 
 This implementation intentionally does not introduce a generic action/assertion
-DSL. It supports two semantic behaviors: discover and activate a landing page's
-primary action, or complete and submit a lead form. New behavior requires a new
-versioned product-domain profile and evaluator implementation.
+DSL. It supports three semantic behaviors: activate a landing page's primary
+action, complete a lead form, or add a storefront product to a visible cart.
+New behavior requires a versioned product-domain profile, labeled benchmark
+cases, and a concrete evaluator implementation.
 
 The completed concrete roadmap is in [`docs/roadmap.md`](docs/roadmap.md).
-Remaining evaluator-design choices are whether deterministic trials should gain
-controlled scenario variations, when a model-driven browser actor has enough
-benchmark evidence to replace semantic automation, and how to add sequestered
-holdout scenarios without making small domain suites too sparse.
+Remaining evaluator work is empirical calibration: expand the corpus with real
+generation failures, estimate flake rates, tune trial/significance defaults,
+and add a cross-run incumbent ledger.
