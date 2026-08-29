@@ -35,6 +35,14 @@ def test_run_help_shows_product_evaluation_controls():
     assert "--promotion-alpha" in r.output
 
 
+def test_evaluator_commands_expose_confidence_level():
+    runner = CliRunner()
+    for command in ("benchmark-evaluator", "calibrate-evaluator"):
+        result = runner.invoke(app, [command, "--help"])
+        assert result.exit_code == 0
+        assert "--confidence" in result.output
+
+
 def test_run_rejects_unknown_product_domain():
     r = CliRunner().invoke(app, ["run", "a site", "--domain", "checkout"])
     assert r.exit_code == 2

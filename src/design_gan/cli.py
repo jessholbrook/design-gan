@@ -15,7 +15,6 @@ from . import (
     evaluation_calibration,
     evaluator_benchmark,
     incumbent_ledger,
-    orchestrator,
     product_domains,
     storage,
 )
@@ -47,6 +46,10 @@ def _benchmark_cases(case_dir: Path | None):
     if len(ids) != len(set(ids)):
         raise typer.BadParameter("built-in and captured evaluator case ids must be unique")
     return cases
+
+
+def _format_counts(counts: dict[str, int]) -> str:
+    return ",".join(f"{key}:{value}" for key, value in counts.items()) or "none"
 
 
 @app.command()
@@ -86,6 +89,8 @@ def run(
         ledger_key = incumbent_ledger.optimization_key(brief, optimization_key)
     except ValueError as exc:
         raise typer.BadParameter(str(exc)) from exc
+    from . import orchestrator
+
     cfg = orchestrator.LoopConfig(
         brief=brief,
         runs_dir=runs_dir,
@@ -116,9 +121,17 @@ def run(
 def benchmark_evaluator(
     json_out: Path = typer.Option(None, help="Optional path for the machine-readable report."),
     case_dir: Path = typer.Option(None, help="Directory of captured real-run case fixtures."),
+    confidence: float = typer.Option(
+        evaluator_benchmark.DEFAULT_CONFIDENCE_LEVEL,
+        min=0.5001,
+        max=0.9999,
+        help="Confidence level for descriptive Wilson intervals.",
+    ),
 ) -> None:
     """Run the labeled Chromium validity corpus against the semantic actor."""
-    report = asyncio.run(evaluator_benchmark.run_benchmark(_benchmark_cases(case_dir)))
+    report = asyncio.run(
+        evaluator_benchmark.run_benchmark(_benchmark_cases(case_dir), confidence_level=confidence)
+    )
     table = Table(title=f"Evaluator benchmark · {report.actor}")
     for column in ("case", "domain", "expected", "actual", "result"):
         table.add_column(column)
@@ -131,9 +144,19 @@ def benchmark_evaluator(
             "correct" if result.correct else "MISS",
         )
     console.print(table)
+    accuracy_interval = evaluator_benchmark.proportion_interval(
+        report.correct, report.total, report.confidence_level
+    )
     console.print(
         f"accuracy={report.accuracy:.1%} ({report.correct}/{report.total}) "
-        f"corpus=v{report.corpus_version}"
+        f"{confidence:.0%} CI={accuracy_interval['lower']:.1%}–"
+        f"{accuracy_interval['upper']:.1%} corpus=v{report.corpus_version}"
+    )
+    console.print(
+        "composition "
+        f"domains={_format_counts(report.composition['by_domain'])} "
+        f"labels={_format_counts(report.composition['by_expected_outcome'])} "
+        f"provenance={_format_counts(report.composition['by_provenance'])}"
     )
     if json_out is not None:
         report.write(json_out)
@@ -153,11 +176,20 @@ def calibrate_evaluator(
     ),
     json_out: Path = typer.Option(None, help="Optional path for the calibration report."),
     case_dir: Path = typer.Option(None, help="Directory of captured real-run case fixtures."),
+    confidence: float = typer.Option(
+        evaluator_benchmark.DEFAULT_CONFIDENCE_LEVEL,
+        min=0.5001,
+        max=0.9999,
+        help="Confidence level for descriptive Wilson intervals.",
+    ),
 ) -> None:
     """Replay the validity corpus to estimate flakes and trial defaults."""
     report = asyncio.run(
         evaluation_calibration.run_calibration(
-            _benchmark_cases(case_dir), repetitions=repetitions, alpha=alpha
+            _benchmark_cases(case_dir),
+            repetitions=repetitions,
+            alpha=alpha,
+            confidence_level=confidence,
         )
     )
     table = Table(title=f"Evaluator calibration · {report.actor}")
@@ -171,9 +203,29 @@ def calibrate_evaluator(
             f"{case.flake_rate:.1%}",
         )
     console.print(table)
+    accuracy_interval = evaluator_benchmark.proportion_interval(
+        report.attempts - report.mismatches,
+        report.attempts,
+        report.confidence_level,
+    )
+    unstable_interval = evaluator_benchmark.proportion_interval(
+        report.unstable_cases,
+        len(report.cases),
+        report.confidence_level,
+    )
     console.print(
-        f"accuracy={report.accuracy:.1%} max_flake={report.max_flake_rate:.1%} "
+        f"accuracy={report.accuracy:.1%} {confidence:.0%} CI="
+        f"{accuracy_interval['lower']:.1%}–{accuracy_interval['upper']:.1%} "
+        f"max_flake={report.max_flake_rate:.1%} "
+        f"unstable_cases={report.unstable_cases}/{len(report.cases)} "
+        f"CI={unstable_interval['lower']:.1%}–{unstable_interval['upper']:.1%} "
         f"recommended_trials={report.recommended_trials} alpha={report.alpha:g}"
+    )
+    console.print(
+        "composition "
+        f"domains={_format_counts(report.composition['by_domain'])} "
+        f"labels={_format_counts(report.composition['by_expected_outcome'])} "
+        f"provenance={_format_counts(report.composition['by_provenance'])}"
     )
     if json_out is not None:
         report.write(json_out)
@@ -302,6 +354,8 @@ def converse(
     runs_dir: Path = typer.Option(None, help="Where to store per-iteration artifacts."),
 ) -> None:
     """Evolve an assistant's system prompt over a short conversation toward GOAL."""
+    from . import orchestrator
+
     _load_env()
     runs_dir = runs_dir or _default_runs_dir()
     cfg = orchestrator.LoopConfig(

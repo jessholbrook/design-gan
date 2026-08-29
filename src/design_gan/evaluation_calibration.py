@@ -50,6 +50,8 @@ class CalibrationReport:
     alpha: float
     cases: tuple[CaseCalibration, ...]
     recommended_trials: int
+    composition: dict[str, Any]
+    confidence_level: float = evaluator_benchmark.DEFAULT_CONFIDENCE_LEVEL
 
     @property
     def attempts(self) -> int:
@@ -67,8 +69,13 @@ class CalibrationReport:
     def max_flake_rate(self) -> float:
         return max((case.flake_rate for case in self.cases), default=0.0)
 
+    @property
+    def unstable_cases(self) -> int:
+        return sum(len(set(case.outcomes)) > 1 for case in self.cases)
+
     def to_dict(self) -> dict[str, Any]:
         return {
+            "report_version": evaluator_benchmark.REPORT_VERSION,
             "corpus_version": self.corpus_version,
             "actor": self.actor,
             "repetitions": self.repetitions,
@@ -77,7 +84,24 @@ class CalibrationReport:
             "mismatches": self.mismatches,
             "accuracy": self.accuracy,
             "max_flake_rate": self.max_flake_rate,
+            "unstable_cases": self.unstable_cases,
             "recommended_trials": self.recommended_trials,
+            "composition": self.composition,
+            "uncertainty": {
+                "method": "wilson-score",
+                "confidence_level": self.confidence_level,
+                "accuracy": evaluator_benchmark.proportion_interval(
+                    self.attempts - self.mismatches,
+                    self.attempts,
+                    self.confidence_level,
+                ),
+                "unstable_case_rate": evaluator_benchmark.proportion_interval(
+                    self.unstable_cases,
+                    len(self.cases),
+                    self.confidence_level,
+                ),
+                "scope": evaluator_benchmark.INTERVAL_SCOPE,
+            },
             "cases": [case.to_dict() for case in self.cases],
         }
 
@@ -123,12 +147,15 @@ async def run_calibration(
     repetitions: int = 3,
     alpha: float = 0.05,
     actor: str = "semantic-v4",
+    confidence_level: float = evaluator_benchmark.DEFAULT_CONFIDENCE_LEVEL,
     evaluator: evaluator_benchmark.Evaluator = browser_evaluator.evaluate,
 ) -> CalibrationReport:
     if repetitions < 2 or repetitions > 20:
         raise ValueError("repetitions must be between 2 and 20")
+    case_items = tuple(cases)
+    evaluator_benchmark.proportion_interval(0, 0, confidence_level)
     case_results: list[CaseCalibration] = []
-    for case in cases:
+    for case in case_items:
         evaluation = await evaluator(case.html, tasks=(case.task,), trials_per_task=repetitions)
         attempts = sorted(evaluation.tasks, key=lambda result: result.trial)
         if len(attempts) != repetitions:
@@ -152,4 +179,6 @@ async def run_calibration(
         alpha=alpha,
         cases=tuple(case_results),
         recommended_trials=recommend_trials(max_flake, alpha),
+        composition=evaluator_benchmark.corpus_composition(case_items),
+        confidence_level=confidence_level,
     )

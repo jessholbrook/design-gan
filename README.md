@@ -42,7 +42,8 @@ critic ──► SUS + feedback (diagnostic) ───────────�
   operator-labeled cases from stored iterations with provenance.
 - **`evaluation_calibration.py`** — repeats the labeled corpus, measures observed
   mismatches/flakes, and derives the smallest odd trial count that satisfies
-  both majority stability and the exact sign-test threshold.
+  both majority stability and the exact sign-test threshold. Reports include
+  corpus composition and descriptive Wilson confidence intervals.
 - **`incumbent_ledger.py`** — scopes cross-run competition to one product key and
   frozen domain/evaluator/artifact contract. It adjudicates challenges only on
   final holdout evidence; incumbent artifacts or feedback never seed search.
@@ -88,8 +89,8 @@ design-gan run "Collect demo requests for a B2B analytics product." \
   --domain lead-generation --evaluation-trials 8 --promotion-alpha 0.05
 design-gan run "A single-product storefront for a lightweight travel mug." \
   --domain storefront --optimization-key travel-mug
-design-gan benchmark-evaluator
-design-gan calibrate-evaluator --repetitions 3
+design-gan benchmark-evaluator --confidence 0.95
+design-gan calibrate-evaluator --repetitions 3 --confidence 0.95
 # Capture an operator-labeled generated case, then include captured cases
 design-gan capture-evaluator-case 12 3 --task-id landing-primary-desktop \
   --case-id run-12-primary-failure --label fail
@@ -170,7 +171,7 @@ pip install -e ".[dev]"
 pytest
 ```
 
-270 tests covering the browser-evaluator and artifact contracts, primary
+276 tests covering the browser-evaluator and artifact contracts, primary
 scoring, paired promotion decisions, storage (schema + migration), the extractor
 helpers, the orchestrator loop (with generator/critic/renderer faked), the
 viewer's HTTP endpoints (including the scrubber route), and the CLI.
@@ -200,9 +201,12 @@ viewer's HTTP endpoints (including the scrubber route), and the CLI.
   tuning signal.
 - **Actor admission is evidence-based.** The recorded semantic-v4 baseline is
   22/22 on labeled corpus v4. Its three-replay calibration is 66/66 with 0%
-  observed flakes. This is evidence for the current default, not proof of a
-  zero population flake rate. A model-driven actor remains outside the loop
-  until it demonstrates better validity within cost and repeatability budgets.
+  observed flakes. The descriptive 95% Wilson intervals are 85.1–100% for the
+  22-case accuracy and 94.5–100% for the 66 replay outcomes; zero unstable cases
+  still has a 0–14.9% interval. These curated cases are not a random production
+  sample, so the intervals quantify finite-corpus uncertainty rather than
+  production prevalence. A model-driven actor remains outside the loop until it
+  demonstrates better validity within cost and repeatability budgets.
 - **Calibrated repeated trials.** At α=0.05, five all-win discordant pairs are
   the smallest exact sign test that clears the threshold (p=0.03125). With no
   flakes observed in the recorded corpus, the default is therefore five trials,
@@ -236,6 +240,5 @@ cases, and a concrete evaluator implementation.
 
 The completed concrete roadmap is in [`docs/roadmap.md`](docs/roadmap.md).
 Remaining research is evidence collection: accumulate reviewed cases from real
-generated runs, use confidence intervals before making population-level claims,
-and admit a model-driven actor only if it beats the semantic baseline within
-explicit cost, latency, and repeatability budgets.
+generated runs and admit a model-driven actor only if it beats the semantic
+baseline within explicit cost, latency, and repeatability budgets.

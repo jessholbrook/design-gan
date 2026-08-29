@@ -147,13 +147,33 @@ All criteria above are met by `codex/product-optimization-roadmap`.
      and a five-trial recommendation in
      `docs/evaluator-calibration-semantic-v4-corpus-v4.json`.
 
+## Uncertainty and composition follow-on — complete
+
+1. **Descriptive confidence intervals**
+   - Benchmark and calibration reports now record configurable two-sided Wilson
+     intervals, defaulting to 95% confidence.
+   - The 22/22 benchmark has a descriptive 85.1–100% interval. The 66/66 replay
+     accuracy has a 94.5–100% interval, while 0/22 unstable cases still permits
+     a 0–14.9% interval.
+   - Reports explicitly state that the curated corpus is not a random sample of
+     production artifacts. Repeated outcomes also share case structure, so the
+     intervals must not be presented as production prevalence bounds.
+2. **Corpus composition**
+   - Machine-readable reports enumerate domain, expected outcome, behavior,
+     interaction mode, exact viewport, and provenance-source counts.
+   - CLI output surfaces the core domain, label, and provenance composition so
+     a perfect headline score cannot hide an all-built-in or imbalanced corpus.
+3. **Report contract**
+   - Benchmark and calibration JSON now use report schema v2 while retaining
+     evaluator corpus v4 and semantic actor v4.
+   - `--confidence` changes the descriptive interval level without changing the
+     frozen evaluator, corpus labels, promotion alpha, or trial recommendation.
+
 ## Next research decisions
 
 - Use the capture path to accumulate reviewed pass and failure examples from
   actual generated runs; the repository intentionally does not fabricate or
   check in a private run fixture merely to claim real-run coverage.
-- Report confidence intervals and corpus composition alongside observed rates
-  before claiming a population flake or validity bound.
 - Reconsider a model actor only if it beats semantic-v4 on the expanded,
   provenance-backed corpus within explicit cost, latency, and repeatability
   budgets.
