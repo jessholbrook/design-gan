@@ -11,15 +11,76 @@ from __future__ import annotations
 import json
 import re
 import time
+from collections import Counter
 from collections.abc import Awaitable, Callable, Iterable
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
+from statistics import NormalDist
 from typing import Any
 
 from . import artifact_policy, browser_evaluator, incumbent_ledger, storage
 
 Evaluator = Callable[..., Awaitable[browser_evaluator.EvaluationResult]]
 CORPUS_VERSION = 4
+REPORT_VERSION = 2
+DEFAULT_CONFIDENCE_LEVEL = 0.95
+INTERVAL_SCOPE = (
+    "Descriptive uncertainty for this curated corpus only; cases are not a random "
+    "sample of production artifacts, and repeated attempts are not independent "
+    "production samples."
+)
+
+
+def proportion_interval(
+    events: int,
+    total: int,
+    confidence_level: float = DEFAULT_CONFIDENCE_LEVEL,
+) -> dict[str, Any]:
+    """Two-sided Wilson interval for an observed binary proportion."""
+    if total < 0 or events < 0 or events > total:
+        raise ValueError("events and total must satisfy 0 <= events <= total")
+    if not 0.5 < confidence_level < 1:
+        raise ValueError("confidence_level must be between 0.5 and 1")
+    if total == 0:
+        return {
+            "events": 0,
+            "total": 0,
+            "estimate": None,
+            "lower": 0.0,
+            "upper": 1.0,
+        }
+    estimate = events / total
+    z = NormalDist().inv_cdf(0.5 + confidence_level / 2)
+    denominator = 1 + z**2 / total
+    center = (estimate + z**2 / (2 * total)) / denominator
+    radius = z * ((estimate * (1 - estimate) / total + z**2 / (4 * total**2)) ** 0.5) / denominator
+    return {
+        "events": events,
+        "total": total,
+        "estimate": estimate,
+        "lower": max(0.0, center - radius),
+        "upper": min(1.0, center + radius),
+    }
+
+
+def _counts(values: Iterable[str]) -> dict[str, int]:
+    return dict(sorted(Counter(values).items()))
+
+
+def corpus_composition(cases: Iterable[BenchmarkCase]) -> dict[str, Any]:
+    """Summarize the concrete axes represented by a labeled corpus."""
+    items = tuple(cases)
+    return {
+        "cases": len(items),
+        "by_domain": _counts(case.domain for case in items),
+        "by_expected_outcome": _counts("pass" if case.expected_pass else "fail" for case in items),
+        "by_behavior": _counts(case.task.behavior for case in items),
+        "by_interaction": _counts(case.task.interaction for case in items),
+        "by_viewport": _counts(
+            f"{case.task.viewport[0]}x{case.task.viewport[1]}" for case in items
+        ),
+        "by_provenance": _counts(str(case.provenance.get("source") or "unknown") for case in items),
+    }
 
 
 @dataclass(frozen=True)
@@ -59,6 +120,8 @@ class BenchmarkReport:
     corpus_version: int
     actor: str
     results: tuple[BenchmarkCaseResult, ...]
+    composition: dict[str, Any]
+    confidence_level: float = DEFAULT_CONFIDENCE_LEVEL
 
     @property
     def correct(self) -> int:
@@ -74,11 +137,19 @@ class BenchmarkReport:
 
     def to_dict(self) -> dict[str, Any]:
         return {
+            "report_version": REPORT_VERSION,
             "corpus_version": self.corpus_version,
             "actor": self.actor,
             "correct": self.correct,
             "total": self.total,
             "accuracy": self.accuracy,
+            "composition": self.composition,
+            "uncertainty": {
+                "method": "wilson-score",
+                "confidence_level": self.confidence_level,
+                "accuracy": proportion_interval(self.correct, self.total, self.confidence_level),
+                "scope": INTERVAL_SCOPE,
+            },
             "results": [asdict(result) for result in self.results],
         }
 
@@ -439,10 +510,14 @@ async def run_benchmark(
     cases: Iterable[BenchmarkCase] = BENCHMARK_CASES,
     *,
     actor: str = "semantic-v4",
+    confidence_level: float = DEFAULT_CONFIDENCE_LEVEL,
     evaluator: Evaluator = browser_evaluator.evaluate,
 ) -> BenchmarkReport:
+    case_items = tuple(cases)
+    # Validate the configured interval even when the corpus is empty.
+    proportion_interval(0, 0, confidence_level)
     results: list[BenchmarkCaseResult] = []
-    for case in cases:
+    for case in case_items:
         evaluation = await evaluator(case.html, tasks=(case.task,), trials_per_task=1)
         actual_pass = (
             evaluation.total == 1 and evaluation.passed == 1 and not evaluation.correctness_errors
@@ -458,4 +533,10 @@ async def run_benchmark(
                 errors=tuple(evaluation.correctness_errors),
             )
         )
-    return BenchmarkReport(corpus_version=CORPUS_VERSION, actor=actor, results=tuple(results))
+    return BenchmarkReport(
+        corpus_version=CORPUS_VERSION,
+        actor=actor,
+        results=tuple(results),
+        composition=corpus_composition(case_items),
+        confidence_level=confidence_level,
+    )

@@ -42,14 +42,18 @@ async def test_calibration_records_mismatches_flakes_and_recommendation():
             ],
         )
 
-    report = await run_calibration(
-        (BENCHMARK_CASES[0],), repetitions=5, evaluator=evaluator
-    )
+    report = await run_calibration((BENCHMARK_CASES[0],), repetitions=5, evaluator=evaluator)
 
     assert report.attempts == 5
     assert report.mismatches == 1
     assert report.max_flake_rate == pytest.approx(0.2)
+    assert report.unstable_cases == 1
     assert report.recommended_trials == 7
+    payload = report.to_dict()
+    assert payload["report_version"] == 2
+    assert payload["composition"]["cases"] == 1
+    assert payload["uncertainty"]["accuracy"]["estimate"] == pytest.approx(0.8)
+    assert payload["uncertainty"]["unstable_case_rate"]["estimate"] == 1.0
 
 
 @pytest.mark.parametrize("repetitions", [1, 21])
@@ -57,3 +61,9 @@ async def test_calibration_records_mismatches_flakes_and_recommendation():
 async def test_calibration_rejects_uninformative_repetition_counts(repetitions: int):
     with pytest.raises(ValueError, match="between 2 and 20"):
         await run_calibration((), repetitions=repetitions)
+
+
+@pytest.mark.asyncio
+async def test_calibration_rejects_invalid_confidence_level():
+    with pytest.raises(ValueError, match="between 0.5 and 1"):
+        await run_calibration((), confidence_level=1.0)

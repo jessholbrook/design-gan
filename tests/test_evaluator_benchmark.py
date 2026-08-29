@@ -9,7 +9,9 @@ from design_gan import browser_evaluator, storage
 from design_gan.evaluator_benchmark import (
     BENCHMARK_CASES,
     capture_run_case,
+    corpus_composition,
     load_case_directory,
+    proportion_interval,
     run_benchmark,
     write_case_fixture,
 )
@@ -23,6 +25,34 @@ def test_corpus_covers_domains_interactions_and_expected_failures():
     }
     assert {case.task.interaction for case in BENCHMARK_CASES} == {"pointer", "keyboard"}
     assert {case.expected_pass for case in BENCHMARK_CASES} == {True, False}
+
+
+def test_corpus_composition_exposes_concrete_coverage_axes():
+    composition = corpus_composition(BENCHMARK_CASES)
+
+    assert composition["cases"] == 22
+    assert composition["by_domain"] == {
+        "landing-page": 9,
+        "lead-generation": 8,
+        "storefront": 5,
+    }
+    assert composition["by_expected_outcome"] == {"fail": 10, "pass": 12}
+    assert composition["by_interaction"] == {"keyboard": 6, "pointer": 16}
+    assert composition["by_provenance"] == {"built-in": 22}
+
+
+def test_wilson_interval_does_not_treat_perfect_observation_as_certain():
+    interval = proportion_interval(22, 22, 0.95)
+
+    assert interval["estimate"] == 1.0
+    assert interval["lower"] == pytest.approx(0.8513, abs=0.0001)
+    assert interval["upper"] == pytest.approx(1.0)
+
+
+@pytest.mark.parametrize("confidence", [0.5, 1.0])
+def test_wilson_interval_rejects_invalid_confidence(confidence: float):
+    with pytest.raises(ValueError, match="between 0.5 and 1"):
+        proportion_interval(1, 1, confidence)
 
 
 @pytest.mark.asyncio
@@ -55,9 +85,14 @@ async def test_report_scores_actor_against_labels(tmp_path: Path):
 
     assert report.accuracy == 1.0
     assert report.correct == report.total == 2
+    assert report.composition["by_expected_outcome"] == {"fail": 1, "pass": 1}
     output = tmp_path / "benchmark.json"
     report.write(output)
-    assert '"accuracy": 1.0' in output.read_text()
+    payload = json.loads(output.read_text())
+    assert payload["accuracy"] == 1.0
+    assert payload["report_version"] == 2
+    assert payload["uncertainty"]["accuracy"]["lower"] < 1.0
+    assert "not a random sample" in payload["uncertainty"]["scope"]
 
 
 def test_operator_labeled_run_case_roundtrips_with_provenance(tmp_path: Path):
