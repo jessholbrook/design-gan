@@ -170,6 +170,7 @@ class TestStatic:
         r = client.get("/static/evaluator-review.js")
         assert r.status_code == 200
         assert "/api/evaluator-cases" in r.text
+        assert "design_gan_reviewer_id" in r.text
 
     def test_static_traversal_rejected(self, client: TestClient):
         # Path traversal via substring check.
@@ -460,6 +461,9 @@ class TestStartTokenGate:
         assert "The evaluator's observed result is context, not the label." in page.text
         assert "landing-review-task" in page.text
         assert "/static/evaluator-review.js" in page.text
+        assert "Actor-comparison readiness" in page.text
+        assert "BLOCKED" in page.text
+        assert 'id="reviewer-id"' in page.text
         assert private_html not in page.text
 
     def test_capture_api_requires_token_writes_fixture_and_rejects_duplicate(
@@ -472,6 +476,8 @@ class TestStartTokenGate:
             "task_id": "landing-review-task",
             "case_id": "reviewed-primary-failure",
             "expected_pass": False,
+            "reviewer": "operator-1",
+            "rationale": "The primary button produces no meaningful visible response.",
         }
 
         assert gated_client.post("/api/evaluator-cases", json=payload).status_code == 401
@@ -489,12 +495,19 @@ class TestStartTokenGate:
         assert response.status_code == 201
         assert response.json()["id"] == "reviewed-primary-failure"
         assert response.json()["provenance"]["source"] == "design-gan-run"
+        assert "review" not in response.json()
+        assert "operator-1" not in response.text
         assert private_html not in response.text
         assert duplicate.status_code == 409
         listed = gated_client.get("/api/evaluator-cases").json()
         assert listed[0]["id"] == "reviewed-primary-failure"
         candidates = gated_client.get("/api/evaluator-case-candidates").json()
         assert candidates[0]["captured_case_ids"] == ["reviewed-primary-failure"]
+        assert candidates[0]["audited_case_ids"] == ["reviewed-primary-failure"]
+        readiness = gated_client.get("/api/evaluator-corpus-readiness").json()
+        assert readiness["ready"] is False
+        assert readiness["qualifying_cases"] == 1
+        assert readiness["requirements"]["minimum_cases"] == 24
 
     def test_bearer_header_accepted(
         self, gated_client: TestClient, monkeypatch: pytest.MonkeyPatch

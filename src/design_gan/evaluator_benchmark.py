@@ -30,6 +30,17 @@ INTERVAL_SCOPE = (
     "production samples."
 )
 
+# This is an initial evidence-collection gate, not a claim of production
+# representativeness. It is deliberately concrete for the three v2 domains and
+# can only change with an explicit policy-version bump.
+ADMISSION_POLICY_VERSION = 1
+ADMISSION_DOMAINS = ("landing-page", "lead-generation", "storefront")
+ADMISSION_MIN_CASES = 24
+ADMISSION_MIN_CASES_PER_DOMAIN = 8
+ADMISSION_MIN_LABELS_PER_DOMAIN = 3
+ADMISSION_MIN_RUNS_PER_DOMAIN = 3
+ADMISSION_MAX_CASES_PER_RUN = 4
+
 
 def proportion_interval(
     events: int,
@@ -84,6 +95,16 @@ def corpus_composition(cases: Iterable[BenchmarkCase]) -> dict[str, Any]:
 
 
 @dataclass(frozen=True)
+class CaseReview:
+    reviewer: str
+    rationale: str
+    reviewed_at: float
+
+    def to_dict(self) -> dict[str, Any]:
+        return asdict(self)
+
+
+@dataclass(frozen=True)
 class BenchmarkCase:
     id: str
     domain: str
@@ -91,9 +112,10 @@ class BenchmarkCase:
     html: str
     expected_pass: bool
     provenance: dict[str, Any] = field(default_factory=lambda: {"source": "built-in"})
+    review: CaseReview | None = None
 
     def to_fixture(self) -> dict[str, Any]:
-        return {
+        fixture = {
             "fixture_version": 1,
             "id": self.id,
             "domain": self.domain,
@@ -102,6 +124,9 @@ class BenchmarkCase:
             "expected_pass": self.expected_pass,
             "provenance": self.provenance,
         }
+        if self.review is not None:
+            fixture["review"] = self.review.to_dict()
+        return fixture
 
 
 @dataclass(frozen=True)
@@ -121,9 +146,32 @@ class ReviewCandidate:
     artifact_sha256: str
     suggested_case_id: str
     captured_case_ids: tuple[str, ...] = ()
+    audited_case_ids: tuple[str, ...] = ()
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
+
+
+@dataclass(frozen=True)
+class CorpusReadinessReport:
+    policy_version: int
+    ready: bool
+    requirements: dict[str, Any]
+    qualifying_cases: int
+    excluded_cases: tuple[dict[str, Any], ...]
+    by_domain: dict[str, int]
+    by_label: dict[str, int]
+    by_domain_label: dict[str, dict[str, int]]
+    distinct_runs_by_domain: dict[str, int]
+    cases_by_run: dict[str, int]
+    blockers: tuple[str, ...]
+
+    def to_dict(self) -> dict[str, Any]:
+        return asdict(self)
+
+    def write(self, path: Path) -> None:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(self.to_dict(), indent=2), encoding="utf-8")
 
 
 @dataclass(frozen=True)
@@ -430,6 +478,24 @@ def write_case_fixture(case: BenchmarkCase, path: Path, *, overwrite: bool = Tru
     return path
 
 
+def case_review(reviewer: str, rationale: str, *, reviewed_at: float | None = None) -> CaseReview:
+    """Validate the auditable metadata required for provenance-corpus admission."""
+    normalized_reviewer = reviewer.strip()
+    normalized_rationale = rationale.strip()
+    if not 2 <= len(normalized_reviewer) <= 80:
+        raise ValueError("reviewer must be 2-80 characters")
+    if not 10 <= len(normalized_rationale) <= 2000:
+        raise ValueError("review rationale must be 10-2000 characters")
+    timestamp = time.time() if reviewed_at is None else reviewed_at
+    if not isinstance(timestamp, (int, float)) or isinstance(timestamp, bool) or timestamp <= 0:
+        raise ValueError("reviewed_at must be a positive timestamp")
+    return CaseReview(
+        reviewer=normalized_reviewer,
+        rationale=normalized_rationale,
+        reviewed_at=float(timestamp),
+    )
+
+
 def load_case_fixture(path: Path) -> BenchmarkCase:
     payload = json.loads(path.read_text(encoding="utf-8"))
     if payload.get("fixture_version") != 1:
@@ -462,6 +528,21 @@ def load_case_fixture(path: Path) -> BenchmarkCase:
     domain = payload.get("domain")
     if not isinstance(domain, str) or not domain.strip():
         raise ValueError(f"domain must be a non-empty string in {path}")
+    review_payload = payload.get("review")
+    review = None
+    if review_payload is not None:
+        if not isinstance(review_payload, dict):
+            raise ValueError(f"review must be an object in {path}")
+        if "reviewed_at" not in review_payload:
+            raise ValueError(f"reviewed_at is required in {path}")
+        try:
+            review = case_review(
+                review_payload.get("reviewer", ""),
+                review_payload.get("rationale", ""),
+                reviewed_at=review_payload.get("reviewed_at"),
+            )
+        except (AttributeError, ValueError) as exc:
+            raise ValueError(f"invalid review metadata in {path}: {exc}") from exc
     return BenchmarkCase(
         id=case_id,
         domain=domain,
@@ -469,6 +550,7 @@ def load_case_fixture(path: Path) -> BenchmarkCase:
         html=html,
         expected_pass=expected_pass,
         provenance=provenance,
+        review=review,
     )
 
 
@@ -478,6 +560,133 @@ def load_case_directory(path: Path) -> tuple[BenchmarkCase, ...]:
     if len(ids) != len(set(ids)):
         raise ValueError("captured evaluator case ids must be unique")
     return cases
+
+
+def audit_provenance_corpus(cases: Iterable[BenchmarkCase]) -> CorpusReadinessReport:
+    """Fail-closed readiness gate for trying a new evaluator actor.
+
+    Only operator-reviewed, immutable Design-GAN run artifacts qualify. The
+    initial policy requires label balance and source-run diversity in every v2
+    domain. Passing this gate permits an actor comparison; it does not establish
+    production prevalence or authorize changing the optimization evaluator.
+    """
+    qualifying: list[BenchmarkCase] = []
+    excluded: list[dict[str, Any]] = []
+    seen_provenance: set[tuple[int, int, str]] = set()
+    seen_artifact_tasks: set[tuple[str, str]] = set()
+    artifact_hash = re.compile(r"^[0-9a-f]{64}$")
+
+    for case in cases:
+        reasons: list[str] = []
+        provenance = case.provenance
+        if provenance.get("source") != "design-gan-run":
+            reasons.append("source is not design-gan-run")
+        if case.review is None:
+            reasons.append("auditable operator review is missing")
+        if case.domain not in ADMISSION_DOMAINS:
+            reasons.append("domain is outside admission policy v1")
+        run_id = provenance.get("run_id")
+        iteration = provenance.get("iteration")
+        task_id = provenance.get("task_id")
+        sha256 = provenance.get("artifact_sha256")
+        if not isinstance(run_id, int) or isinstance(run_id, bool) or run_id < 1:
+            reasons.append("valid source run_id is missing")
+        if not isinstance(iteration, int) or isinstance(iteration, bool) or iteration < 1:
+            reasons.append("valid source iteration is missing")
+        if not isinstance(task_id, str) or task_id != case.task.id:
+            reasons.append("source task_id does not match the frozen task")
+        if not isinstance(sha256, str) or not artifact_hash.fullmatch(sha256):
+            reasons.append("valid artifact_sha256 is missing")
+        elif sha256 != incumbent_ledger.artifact_hash(case.html):
+            reasons.append("artifact_sha256 does not match fixture HTML")
+
+        if not reasons:
+            provenance_key = (run_id, iteration, task_id)
+            artifact_task_key = (sha256, task_id)
+            if provenance_key in seen_provenance:
+                reasons.append("duplicate run/iteration/task provenance")
+            if artifact_task_key in seen_artifact_tasks:
+                reasons.append("duplicate artifact/task evidence")
+        if reasons:
+            excluded.append({"id": case.id, "reasons": reasons})
+            continue
+        seen_provenance.add(provenance_key)
+        seen_artifact_tasks.add(artifact_task_key)
+        qualifying.append(case)
+
+    by_domain_counter = Counter(case.domain for case in qualifying)
+    by_label_counter = Counter("pass" if case.expected_pass else "fail" for case in qualifying)
+    domain_label_counter = {
+        domain: Counter(
+            "pass" if case.expected_pass else "fail" for case in qualifying if case.domain == domain
+        )
+        for domain in ADMISSION_DOMAINS
+    }
+    runs_by_domain = {
+        domain: {int(case.provenance["run_id"]) for case in qualifying if case.domain == domain}
+        for domain in ADMISSION_DOMAINS
+    }
+    cases_by_run_counter = Counter(str(case.provenance["run_id"]) for case in qualifying)
+
+    blockers: list[str] = []
+    if len(qualifying) < ADMISSION_MIN_CASES:
+        blockers.append(
+            f"need at least {ADMISSION_MIN_CASES} qualifying cases; found {len(qualifying)}"
+        )
+    for domain in ADMISSION_DOMAINS:
+        domain_count = by_domain_counter[domain]
+        if domain_count < ADMISSION_MIN_CASES_PER_DOMAIN:
+            blockers.append(
+                f"{domain}: need {ADMISSION_MIN_CASES_PER_DOMAIN} cases; found {domain_count}"
+            )
+        for label in ("pass", "fail"):
+            label_count = domain_label_counter[domain][label]
+            if label_count < ADMISSION_MIN_LABELS_PER_DOMAIN:
+                blockers.append(
+                    f"{domain}: need {ADMISSION_MIN_LABELS_PER_DOMAIN} expected-{label} "
+                    f"cases; found {label_count}"
+                )
+        run_count = len(runs_by_domain[domain])
+        if run_count < ADMISSION_MIN_RUNS_PER_DOMAIN:
+            blockers.append(
+                f"{domain}: need {ADMISSION_MIN_RUNS_PER_DOMAIN} distinct source runs; "
+                f"found {run_count}"
+            )
+    for run_id, count in sorted(cases_by_run_counter.items(), key=lambda item: int(item[0])):
+        if count > ADMISSION_MAX_CASES_PER_RUN:
+            blockers.append(
+                f"run {run_id}: at most {ADMISSION_MAX_CASES_PER_RUN} cases may qualify; "
+                f"found {count}"
+            )
+
+    requirements = {
+        "domains": list(ADMISSION_DOMAINS),
+        "minimum_cases": ADMISSION_MIN_CASES,
+        "minimum_cases_per_domain": ADMISSION_MIN_CASES_PER_DOMAIN,
+        "minimum_labels_per_domain": ADMISSION_MIN_LABELS_PER_DOMAIN,
+        "minimum_distinct_runs_per_domain": ADMISSION_MIN_RUNS_PER_DOMAIN,
+        "maximum_cases_per_run": ADMISSION_MAX_CASES_PER_RUN,
+        "review_required": True,
+        "provenance_source": "design-gan-run",
+    }
+    return CorpusReadinessReport(
+        policy_version=ADMISSION_POLICY_VERSION,
+        ready=not blockers,
+        requirements=requirements,
+        qualifying_cases=len(qualifying),
+        excluded_cases=tuple(excluded),
+        by_domain=dict(sorted(by_domain_counter.items())),
+        by_label=dict(sorted(by_label_counter.items())),
+        by_domain_label={
+            domain: dict(sorted(domain_label_counter[domain].items()))
+            for domain in ADMISSION_DOMAINS
+        },
+        distinct_runs_by_domain={
+            domain: len(runs_by_domain[domain]) for domain in ADMISSION_DOMAINS
+        },
+        cases_by_run=dict(sorted(cases_by_run_counter.items(), key=lambda item: int(item[0]))),
+        blockers=tuple(blockers),
+    )
 
 
 def _suggested_case_id(run_id: int, iteration: int, task_id: str) -> str:
@@ -502,7 +711,7 @@ def review_candidates(
     """
     if limit < 1:
         raise ValueError("limit must be positive")
-    captured: dict[tuple[int, int, str], list[str]] = {}
+    captured: dict[tuple[int, int, str], list[BenchmarkCase]] = {}
     for case in captured_cases:
         provenance = case.provenance
         if provenance.get("source") != "design-gan-run":
@@ -513,7 +722,7 @@ def review_candidates(
             provenance.get("task_id"),
         )
         if isinstance(key[0], int) and isinstance(key[1], int) and isinstance(key[2], str):
-            captured.setdefault(key, []).append(case.id)
+            captured.setdefault(key, []).append(case)
 
     candidates: list[ReviewCandidate] = []
     for run in store.list_runs():
@@ -547,6 +756,7 @@ def review_candidates(
                 if failed_only and observed_pass:
                     continue
                 key = (run["id"], record["iter"], task_id)
+                captured_for_key = captured.get(key, ())
                 candidates.append(
                     ReviewCandidate(
                         run_id=run["id"],
@@ -561,7 +771,10 @@ def review_candidates(
                         errors=errors,
                         artifact_sha256=incumbent_ledger.artifact_hash(record["html"]),
                         suggested_case_id=_suggested_case_id(run["id"], record["iter"], task_id),
-                        captured_case_ids=tuple(sorted(captured.get(key, ()))),
+                        captured_case_ids=tuple(sorted(case.id for case in captured_for_key)),
+                        audited_case_ids=tuple(
+                            sorted(case.id for case in captured_for_key if case.review is not None)
+                        ),
                     )
                 )
                 if len(candidates) >= limit:
@@ -577,6 +790,8 @@ def capture_run_case(
     task_id: str,
     case_id: str,
     expected_pass: bool,
+    reviewer: str,
+    rationale: str,
 ) -> BenchmarkCase:
     """Capture an operator-labeled evaluator case from immutable run history."""
     if not _CASE_ID.fullmatch(case_id):
@@ -616,6 +831,7 @@ def capture_run_case(
             "artifact_sha256": incumbent_ledger.artifact_hash(html),
             "captured_at": time.time(),
         },
+        review=case_review(reviewer, rationale),
     )
 
 

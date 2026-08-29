@@ -11,6 +11,7 @@ import os
 from contextlib import asynccontextmanager
 from functools import lru_cache
 from pathlib import Path
+from typing import Any
 
 from fastapi import FastAPI, Header, HTTPException
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, StreamingResponse
@@ -18,10 +19,8 @@ from pydantic import BaseModel, Field
 
 from . import (
     artifact_policy,
-    critic,
     evaluator_benchmark,
     incumbent_ledger,
-    orchestrator,
     product_domains,
     storage,
 )
@@ -58,7 +57,7 @@ def _daily_budget_usd() -> float | None:
 ABANDONED_RUN_TIMEOUT_SECONDS = int(os.environ.get("DESIGN_GAN_ABANDONED_TIMEOUT_S", "600"))
 
 
-def _configured_critics() -> list[critic.CriticProfile] | None:
+def _configured_critics() -> list[Any] | None:
     """DESIGN_GAN_CRITICS=trio opts into the 3-critic ensemble.
 
     Unset or 'solo' keeps the single Usability critic (backward compat).
@@ -66,6 +65,8 @@ def _configured_critics() -> list[critic.CriticProfile] | None:
     """
     mode = (os.environ.get("DESIGN_GAN_CRITICS") or "").strip().lower()
     if mode == "trio":
+        from . import critic
+
         return list(critic.TRIO)
     return None
 
@@ -162,6 +163,10 @@ def _review_candidates(
         failed_only=failed_only,
         limit=limit,
     )
+
+
+def _corpus_readiness() -> evaluator_benchmark.CorpusReadinessReport:
+    return evaluator_benchmark.audit_provenance_corpus(_evaluator_cases())
 
 
 def _runs_sidebar(active_id: int | None) -> str:
@@ -372,6 +377,7 @@ def index() -> str:
 
 @app.get("/evaluator-review", response_class=HTMLResponse)
 def evaluator_review(failed_only: bool = True) -> str:
+    readiness = _corpus_readiness()
     candidates = _review_candidates(failed_only=failed_only)
     cards = []
     for candidate in candidates:
@@ -385,22 +391,36 @@ def evaluator_review(failed_only: bool = True) -> str:
             else '<p class="muted">No runtime errors recorded.</p>'
         )
         captured = ""
+        case_id_value = candidate.suggested_case_id
+        if case_id_value in candidate.captured_case_ids:
+            case_id_value = f"{case_id_value[:71].rstrip('-')}-reviewed"
         actions = f"""
           <label>Stable case id
-            <input name="case_id" value="{html.escape(candidate.suggested_case_id)}"
+            <input name="case_id" value="{html.escape(case_id_value)}"
               pattern="[a-z0-9][a-z0-9-]{{2,79}}" required />
+          </label>
+          <label>Review rationale
+            <textarea name="rationale" minlength="10" maxlength="2000" required
+              placeholder="Why should this frozen task pass or fail on the artifact?"></textarea>
           </label>
           <div class="review-actions">
             <button type="button" data-label="pass">Label should pass</button>
             <button type="button" data-label="fail" class="secondary">Label should fail</button>
           </div>"""
-        if candidate.captured_case_ids:
-            case_ids = ", ".join(candidate.captured_case_ids)
+        if candidate.audited_case_ids:
+            case_ids = ", ".join(candidate.audited_case_ids)
             captured = (
-                '<p class="review-captured">Already captured: '
+                '<p class="review-captured">Already captured with review metadata: '
                 f"<code>{html.escape(case_ids)}</code></p>"
             )
             actions = '<p class="muted">This exact run, iteration, and task is already labeled.</p>'
+        elif candidate.captured_case_ids:
+            case_ids = ", ".join(candidate.captured_case_ids)
+            captured = (
+                '<p class="review-warning">Legacy fixture lacks review metadata: '
+                f"<code>{html.escape(case_ids)}</code>. Save an audited replacement under "
+                "a new case id.</p>"
+            )
         task_id_attr = html.escape(candidate.task_id)
         site_url = f"/runs/{candidate.run_id}/iters/{candidate.iteration}/site"
         screenshot_url = f"/runs/{candidate.run_id}/iters/{candidate.iteration}/screenshot"
@@ -440,6 +460,15 @@ def evaluator_review(failed_only: bool = True) -> str:
         if _required_start_token()
         else ""
     )
+    readiness_class = "review-pass" if readiness.ready else "review-fail"
+    readiness_label = "READY" if readiness.ready else "BLOCKED"
+    blockers = (
+        "<ul>"
+        + "".join(f"<li>{html.escape(blocker)}</li>" for blocker in readiness.blockers)
+        + "</ul>"
+        if readiness.blockers
+        else "<p>The provenance corpus clears the initial actor-comparison gate.</p>"
+    )
     filter_link = (
         '<a href="/evaluator-review?failed_only=false">Include successful outcomes</a>'
         if failed_only
@@ -453,8 +482,17 @@ def evaluator_review(failed_only: bool = True) -> str:
         <div>{filter_link}</div>
       </header>
       <section class="review-controls">{token_field}
+        <label class="review-token">Reviewer id
+          <input id="reviewer-id" autocomplete="off" placeholder="Stable operator id" />
+        </label>
         <p class="muted">Labels are stored locally with full artifact provenance and are
         automatically included by benchmark and calibration commands using this corpus.</p>
+      </section>
+      <section class="card corpus-readiness">
+        <h2>Actor-comparison readiness: <span class="{readiness_class}">{readiness_label}</span></h2>
+        <p>{readiness.qualifying_cases} qualifying case(s) ·
+          {len(readiness.excluded_cases)} excluded · policy v{readiness.policy_version}</p>
+        {blockers}
       </section>
       {empty}{"".join(cards)}
       <script src="/static/evaluator-review.js"></script>
@@ -760,6 +798,12 @@ def api_evaluator_case_candidates(failed_only: bool = True, limit: int = 100) ->
     )
 
 
+@app.get("/api/evaluator-corpus-readiness")
+def api_evaluator_corpus_readiness() -> JSONResponse:
+    """Report whether real-run evidence clears the actor-comparison gate."""
+    return JSONResponse(_corpus_readiness().to_dict())
+
+
 # ---------- Routes: start + stream ----------
 
 
@@ -787,6 +831,8 @@ class CaptureEvaluatorCaseRequest(BaseModel):
     task_id: str = Field(min_length=1, max_length=160)
     case_id: str = Field(pattern=r"^[a-z0-9][a-z0-9-]{2,79}$")
     expected_pass: bool
+    reviewer: str = Field(min_length=2, max_length=80)
+    rationale: str = Field(min_length=10, max_length=2000)
     token: str | None = None
 
 
@@ -817,6 +863,8 @@ def capture_evaluator_case(
             task_id=req.task_id,
             case_id=req.case_id,
             expected_pass=req.expected_pass,
+            reviewer=req.reviewer,
+            rationale=req.rationale,
         )
         evaluator_benchmark.write_case_fixture(
             case,
@@ -866,6 +914,8 @@ def api_config() -> JSONResponse:
 async def start_run(
     req: StartRunRequest, authorization: str | None = Header(default=None)
 ) -> JSONResponse:
+    from . import critic, orchestrator
+
     _check_write_token(req.token, authorization)
 
     # Reject up-front when the daily budget is already spent. The orchestrator

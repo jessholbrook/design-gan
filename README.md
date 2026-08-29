@@ -39,7 +39,9 @@ critic ──► SUS + feedback (diagnostic) ───────────�
   two untouched holdout scenarios against the final promoted artifact.
 - **`evaluator_benchmark.py`** — runs a labeled Chromium validity corpus without
   connecting experimental actors to the optimization loop, and captures
-  operator-labeled cases from stored iterations with provenance.
+  operator-labeled cases from stored iterations with provenance. Its corpus
+  admission audit fails closed until real-run labels are balanced and sourced
+  from multiple runs in every supported domain.
 - **`evaluation_calibration.py`** — repeats the labeled corpus, measures observed
   mismatches/flakes, and derives the smallest odd trial count that satisfies
   both majority stability and the exact sign-test threshold. Reports include
@@ -96,7 +98,9 @@ design-gan benchmark-evaluator --confidence 0.95
 design-gan calibrate-evaluator --repetitions 3 --confidence 0.95
 # Capture an operator-labeled generated case, then include captured cases
 design-gan capture-evaluator-case 12 3 --task-id landing-primary-desktop \
-  --case-id run-12-primary-failure --label fail
+  --case-id run-12-primary-failure --label fail --reviewer operator-1 \
+  --rationale "The primary action does not produce a meaningful response."
+design-gan audit-evaluator-corpus
 design-gan benchmark-evaluator --case-dir runs/evaluator-corpus
 design-gan list-runs
 design-gan list-incumbents
@@ -117,6 +121,15 @@ decides whether the frozen task should pass, and saves that label into the local
 artifact hashes, and provenance but never generated HTML. Label writes reuse
 `DESIGN_GAN_START_TOKEN` when that deployment gate is configured; reading run
 history remains open.
+
+Every new captured label requires a stable reviewer id and a concrete rationale.
+`audit-evaluator-corpus` is the fail-closed prerequisite for an experimental
+actor comparison. Policy v1 requires 24 qualifying real-run cases: at least
+eight per domain, at least three pass and three fail labels per domain, at least
+three source runs per domain, and no more than four qualifying cases from one
+run. Duplicate run/task provenance and duplicate artifact/task evidence do not
+qualify. Passing this initial coverage gate permits a comparison; it does not
+claim that the reviewed corpus represents production traffic.
 
 ![Run page — score over iterations and per-iteration cards.](docs/images/run-page.png)
 
@@ -182,10 +195,11 @@ pip install -e ".[dev]"
 pytest
 ```
 
-276 tests covering the browser-evaluator and artifact contracts, primary
+284 tests covering the browser-evaluator and artifact contracts, primary
 scoring, paired promotion decisions, storage (schema + migration), the extractor
 helpers, the orchestrator loop (with generator/critic/renderer faked), the
-viewer's HTTP endpoints (including the scrubber route), and the CLI.
+viewer's HTTP endpoints (including the scrubber and evaluator review routes),
+the provenance-corpus admission contract, and the CLI.
 
 ## Design notes
 

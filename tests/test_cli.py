@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 from typer.testing import CliRunner
@@ -18,6 +19,7 @@ def test_help_shows_commands():
         "benchmark-evaluator",
         "calibrate-evaluator",
         "capture-evaluator-case",
+        "audit-evaluator-corpus",
         "list-incumbents",
         "list-runs",
         "demo",
@@ -75,12 +77,36 @@ def test_capture_evaluator_case_rejects_unknown_label(tmp_path: Path):
             "captured-case",
             "--label",
             "maybe",
+            "--reviewer",
+            "operator-1",
+            "--rationale",
+            "This label has a concrete operator rationale.",
             "--runs-dir",
             str(tmp_path),
         ],
     )
     assert r.exit_code == 2
     assert "pass or fail" in r.output
+
+
+def test_audit_evaluator_corpus_fails_closed_and_writes_report(tmp_path: Path):
+    report_path = tmp_path / "readiness.json"
+    r = CliRunner().invoke(
+        app,
+        [
+            "audit-evaluator-corpus",
+            "--runs-dir",
+            str(tmp_path),
+            "--json-out",
+            str(report_path),
+        ],
+    )
+
+    assert r.exit_code == 1
+    assert "BLOCKED" in r.output
+    report = json.loads(report_path.read_text(encoding="utf-8"))
+    assert report["ready"] is False
+    assert report["requirements"]["minimum_cases"] == 24
 
 
 def test_demo_seeds_and_then_list_runs_shows_it(tmp_path: Path):

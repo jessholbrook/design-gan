@@ -5,10 +5,14 @@ from pathlib import Path
 
 import pytest
 
-from design_gan import browser_evaluator, storage
+from design_gan import browser_evaluator, incumbent_ledger, storage
 from design_gan.evaluator_benchmark import (
+    ADMISSION_DOMAINS,
     BENCHMARK_CASES,
+    BenchmarkCase,
+    audit_provenance_corpus,
     capture_run_case,
+    case_review,
     corpus_composition,
     load_case_directory,
     proportion_interval,
@@ -136,6 +140,8 @@ def test_operator_labeled_run_case_roundtrips_with_provenance(tmp_path: Path):
         task_id=task.id,
         case_id="real-run-missed-action",
         expected_pass=False,
+        reviewer="operator-1",
+        rationale="The visible primary action does not produce the required response.",
     )
     fixture = tmp_path / "cases" / "case.json"
     write_case_fixture(case, fixture)
@@ -146,6 +152,8 @@ def test_operator_labeled_run_case_roundtrips_with_provenance(tmp_path: Path):
     assert loaded[0].task.viewport == (390, 844)
     assert loaded[0].provenance["run_id"] == run_id
     assert len(loaded[0].provenance["artifact_sha256"]) == 64
+    assert loaded[0].review is not None
+    assert loaded[0].review.reviewer == "operator-1"
 
 
 def test_review_candidates_group_trials_prioritize_failures_and_mark_captured(tmp_path: Path):
@@ -205,18 +213,116 @@ def test_review_candidates_group_trials_prioritize_failures_and_mark_captured(tm
         task_id=task.id,
         case_id="operator-reviewed-failure",
         expected_pass=False,
+        reviewer="operator-1",
+        rationale="The second recorded trial did not produce a meaningful response.",
     )
 
     failures = review_candidates(store, captured_cases=(captured,))
     all_outcomes = review_candidates(store, captured_cases=(captured,), failed_only=False)
+    legacy = BenchmarkCase(
+        id="legacy-operator-label",
+        domain=captured.domain,
+        task=captured.task,
+        html=captured.html,
+        expected_pass=captured.expected_pass,
+        provenance=captured.provenance,
+    )
+    legacy_candidates = review_candidates(store, captured_cases=(legacy,))
 
     assert len(failures) == 1
     assert failures[0].observed_pass is False
     assert (failures[0].passed_trials, failures[0].total_trials) == (1, 2)
     assert failures[0].errors == ("button did not respond",)
     assert failures[0].captured_case_ids == ("operator-reviewed-failure",)
+    assert failures[0].audited_case_ids == ("operator-reviewed-failure",)
     assert failures[0].suggested_case_id == "run-1-iter-1-landing-primary"
     assert [candidate.iteration for candidate in all_outcomes] == [2, 1]
+    assert legacy_candidates[0].captured_case_ids == ("legacy-operator-label",)
+    assert legacy_candidates[0].audited_case_ids == ()
+
+
+def _admission_cases() -> tuple[BenchmarkCase, ...]:
+    cases = []
+    for domain_number, domain in enumerate(ADMISSION_DOMAINS, start=1):
+        for index in range(8):
+            task_id = f"{domain}-review-{index}"
+            task = browser_evaluator.BrowserTask(
+                task_id,
+                f"{domain} task {index}",
+                "Perform the frozen behavior.",
+                behavior="primary-action",
+            )
+            html = f"<!doctype html><html><body><button>{domain}-{index}</button></body></html>"
+            run_id = domain_number * 10 + index % 3
+            cases.append(
+                BenchmarkCase(
+                    id=f"{domain}-review-{index}",
+                    domain=domain,
+                    task=task,
+                    html=html,
+                    expected_pass=index % 2 == 0,
+                    provenance={
+                        "source": "design-gan-run",
+                        "run_id": run_id,
+                        "iteration": index + 1,
+                        "task_id": task_id,
+                        "artifact_sha256": incumbent_ledger.artifact_hash(html),
+                    },
+                    review=case_review(
+                        "operator-1",
+                        "The frozen task outcome is unambiguous in the inspected artifact.",
+                        reviewed_at=1.0,
+                    ),
+                )
+            )
+    return tuple(cases)
+
+
+def test_provenance_corpus_admission_requires_balanced_diverse_reviewed_evidence():
+    report = audit_provenance_corpus(_admission_cases())
+
+    assert report.ready is True
+    assert report.policy_version == 1
+    assert report.qualifying_cases == 24
+    assert report.by_domain == {domain: 8 for domain in ADMISSION_DOMAINS}
+    assert report.by_label == {"fail": 12, "pass": 12}
+    assert report.distinct_runs_by_domain == {domain: 3 for domain in ADMISSION_DOMAINS}
+    assert report.blockers == ()
+
+
+def test_provenance_corpus_admission_excludes_unaudited_and_duplicate_evidence():
+    cases = list(_admission_cases())
+    first = cases[0]
+    cases[0] = BenchmarkCase(
+        id=first.id,
+        domain=first.domain,
+        task=first.task,
+        html=first.html,
+        expected_pass=first.expected_pass,
+        provenance=first.provenance,
+    )
+    cases.append(
+        BenchmarkCase(
+            id="duplicate-provenance",
+            domain=cases[1].domain,
+            task=cases[1].task,
+            html=cases[1].html,
+            expected_pass=cases[1].expected_pass,
+            provenance=cases[1].provenance,
+            review=cases[1].review,
+        )
+    )
+
+    report = audit_provenance_corpus(cases)
+
+    assert report.ready is False
+    assert report.qualifying_cases == 23
+    assert {item["id"] for item in report.excluded_cases} == {
+        first.id,
+        "duplicate-provenance",
+    }
+    assert any("need at least 24" in blocker for blocker in report.blockers)
+    assert "auditable operator review is missing" in report.excluded_cases[0]["reasons"]
 
 
 def test_captured_fixture_loader_reports_invalid_task_as_validation_error(tmp_path: Path):
@@ -226,4 +332,17 @@ def test_captured_fixture_loader_reports_invalid_task_as_validation_error(tmp_pa
     fixture.write_text(json.dumps(payload), encoding="utf-8")
 
     with pytest.raises(ValueError, match="invalid evaluator task"):
+        load_case_directory(tmp_path)
+
+
+def test_captured_fixture_loader_rejects_incomplete_review_metadata(tmp_path: Path):
+    fixture = tmp_path / "bad-review.json"
+    payload = BENCHMARK_CASES[0].to_fixture()
+    payload["review"] = {
+        "reviewer": "operator-1",
+        "rationale": "The artifact behavior was inspected directly.",
+    }
+    fixture.write_text(json.dumps(payload), encoding="utf-8")
+
+    with pytest.raises(ValueError, match="reviewed_at is required"):
         load_case_directory(tmp_path)
