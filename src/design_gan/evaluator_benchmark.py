@@ -9,14 +9,17 @@ landing-page, lead-form, and storefront behaviors. Alternate actors can be passe
 from __future__ import annotations
 
 import json
+import re
+import time
 from collections.abc import Awaitable, Callable, Iterable
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any
 
-from . import browser_evaluator
+from . import artifact_policy, browser_evaluator, incumbent_ledger, storage
 
 Evaluator = Callable[..., Awaitable[browser_evaluator.EvaluationResult]]
+CORPUS_VERSION = 4
 
 
 @dataclass(frozen=True)
@@ -26,6 +29,18 @@ class BenchmarkCase:
     task: browser_evaluator.BrowserTask
     html: str
     expected_pass: bool
+    provenance: dict[str, Any] = field(default_factory=lambda: {"source": "built-in"})
+
+    def to_fixture(self) -> dict[str, Any]:
+        return {
+            "fixture_version": 1,
+            "id": self.id,
+            "domain": self.domain,
+            "task": self.task.to_dict(),
+            "html": self.html,
+            "expected_pass": self.expected_pass,
+            "provenance": self.provenance,
+        }
 
 
 @dataclass(frozen=True)
@@ -103,6 +118,20 @@ BENCHMARK_CASES: tuple[BenchmarkCase, ...] = (
         "landing-keyboard-action",
         "landing-page",
         _task("landing-keyboard-action", "primary-action", interaction="keyboard"),
+        """<html><body><button data-primary-action
+        onclick="document.querySelector('output').textContent='Started'">Start</button>
+        <output></output></body></html>""",
+        True,
+    ),
+    BenchmarkCase(
+        "landing-mobile-keyboard-action",
+        "landing-page",
+        _task(
+            "landing-mobile-keyboard-action",
+            "primary-action",
+            interaction="keyboard",
+            viewport=(390, 844),
+        ),
         """<html><body><button data-primary-action
         onclick="document.querySelector('output').textContent='Started'">Start</button>
         <output></output></body></html>""",
@@ -195,6 +224,21 @@ BENCHMARK_CASES: tuple[BenchmarkCase, ...] = (
         True,
     ),
     BenchmarkCase(
+        "lead-mobile-keyboard-form",
+        "lead-generation",
+        _task(
+            "lead-mobile-keyboard-form",
+            "form-completion",
+            interaction="keyboard",
+            viewport=(390, 844),
+        ),
+        """<html><body><form data-primary-action
+        onsubmit="event.preventDefault();this.outerHTML='<p>Request received</p>'">
+        <label>Email<input type="email" required></label>
+        <button type="submit">Request demo</button></form></body></html>""",
+        True,
+    ),
+    BenchmarkCase(
         "lead-no-success-state",
         "lead-generation",
         _task("lead-no-success-state", "form-completion"),
@@ -249,6 +293,20 @@ BENCHMARK_CASES: tuple[BenchmarkCase, ...] = (
         True,
     ),
     BenchmarkCase(
+        "storefront-mobile-keyboard-cart",
+        "storefront",
+        _task(
+            "storefront-mobile-keyboard-cart",
+            "cart-addition",
+            interaction="keyboard",
+            viewport=(390, 844),
+        ),
+        """<html><body><button data-primary-action
+        onclick="document.querySelector('output').textContent='Cart (1)'">Add to cart</button>
+        <output>Cart (0)</output></body></html>""",
+        True,
+    ),
+    BenchmarkCase(
         "storefront-generic-change",
         "storefront",
         _task("storefront-generic-change", "cart-addition"),
@@ -267,6 +325,114 @@ BENCHMARK_CASES: tuple[BenchmarkCase, ...] = (
         False,
     ),
 )
+
+_CASE_ID = re.compile(r"^[a-z0-9][a-z0-9-]{2,79}$")
+
+
+def write_case_fixture(case: BenchmarkCase, path: Path) -> Path:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(case.to_fixture(), indent=2), encoding="utf-8")
+    return path
+
+
+def load_case_fixture(path: Path) -> BenchmarkCase:
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    if payload.get("fixture_version") != 1:
+        raise ValueError(f"unsupported evaluator fixture version in {path}")
+    case_id = payload.get("id")
+    if not isinstance(case_id, str) or not _CASE_ID.fullmatch(case_id):
+        raise ValueError(f"invalid evaluator case id in {path}")
+    expected_pass = payload.get("expected_pass")
+    if not isinstance(expected_pass, bool):
+        raise ValueError(f"expected_pass must be boolean in {path}")
+    html = payload.get("html")
+    if not isinstance(html, str):
+        raise ValueError(f"html must be a string in {path}")
+    validation = artifact_policy.validate_html(html)
+    if not validation.passed:
+        raise ValueError(f"captured evaluator artifact violates policy in {path}")
+    task_payload = payload.get("task")
+    if not isinstance(task_payload, dict):
+        raise ValueError(f"task must be an object in {path}")
+    if isinstance(task_payload.get("viewport"), list):
+        task_payload = {**task_payload, "viewport": tuple(task_payload["viewport"])}
+    try:
+        task = browser_evaluator.BrowserTask(**task_payload)
+        browser_evaluator.frozen_suite((task,))
+    except (TypeError, ValueError) as exc:
+        raise ValueError(f"invalid evaluator task in {path}: {exc}") from exc
+    provenance = payload.get("provenance") or {}
+    if not isinstance(provenance, dict):
+        raise ValueError(f"provenance must be an object in {path}")
+    domain = payload.get("domain")
+    if not isinstance(domain, str) or not domain.strip():
+        raise ValueError(f"domain must be a non-empty string in {path}")
+    return BenchmarkCase(
+        id=case_id,
+        domain=domain,
+        task=task,
+        html=html,
+        expected_pass=expected_pass,
+        provenance=provenance,
+    )
+
+
+def load_case_directory(path: Path) -> tuple[BenchmarkCase, ...]:
+    cases = tuple(load_case_fixture(item) for item in sorted(path.glob("*.json")))
+    ids = [case.id for case in cases]
+    if len(ids) != len(set(ids)):
+        raise ValueError("captured evaluator case ids must be unique")
+    return cases
+
+
+def capture_run_case(
+    store: storage.Storage,
+    *,
+    run_id: int,
+    iteration: int,
+    task_id: str,
+    case_id: str,
+    expected_pass: bool,
+) -> BenchmarkCase:
+    """Capture an operator-labeled evaluator case from immutable run history."""
+    if not _CASE_ID.fullmatch(case_id):
+        raise ValueError("case_id must be 3-80 lowercase letters, numbers, or hyphens")
+    run = store.get_run(run_id)
+    if run is None or (run.get("kind") or "design") != "design":
+        raise ValueError(f"design run {run_id} not found")
+    record = next(
+        (item for item in store.iterations_for_run(run_id) if item["iter"] == iteration),
+        None,
+    )
+    if record is None:
+        raise ValueError(f"iteration {iteration} not found in run {run_id}")
+    plan = run.get("evaluation_plan") or {}
+    tasks = plan.get("tasks") or run.get("evaluation_suite") or []
+    task_payload = next((task for task in tasks if task.get("id") == task_id), None)
+    if task_payload is None:
+        raise ValueError(f"task {task_id!r} not found in run {run_id}'s frozen suite")
+    if isinstance(task_payload.get("viewport"), list):
+        task_payload = {**task_payload, "viewport": tuple(task_payload["viewport"])}
+    task = browser_evaluator.BrowserTask(**task_payload)
+    html = record["html"]
+    validation = artifact_policy.validate_html(html)
+    if not validation.passed:
+        raise ValueError("stored iteration violates the evaluator artifact policy")
+    return BenchmarkCase(
+        id=case_id,
+        domain=run.get("domain") or plan.get("domain") or "custom",
+        task=task,
+        html=html,
+        expected_pass=expected_pass,
+        provenance={
+            "source": "design-gan-run",
+            "run_id": run_id,
+            "iteration": iteration,
+            "task_id": task_id,
+            "artifact_sha256": incumbent_ledger.artifact_hash(html),
+            "captured_at": time.time(),
+        },
+    )
 
 
 async def run_benchmark(
@@ -292,4 +458,4 @@ async def run_benchmark(
                 errors=tuple(evaluation.correctness_errors),
             )
         )
-    return BenchmarkReport(corpus_version=3, actor=actor, results=tuple(results))
+    return BenchmarkReport(corpus_version=CORPUS_VERSION, actor=actor, results=tuple(results))

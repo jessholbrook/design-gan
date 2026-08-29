@@ -7,7 +7,7 @@ from pathlib import Path
 
 import pytest
 
-from design_gan.storage import IterationRecord, Storage
+from design_gan.storage import IncumbentConflict, IterationRecord, Storage
 
 
 @pytest.fixture
@@ -293,6 +293,58 @@ class TestRuns:
         assert [item["active"] for item in history] == [True, False]
         assert history[0]["supersedes_id"] == first_id
         assert "html" not in history[0]
+
+    def test_stale_incumbent_challenge_is_rejected_without_mutation(self, store: Storage):
+        contract = {
+            "optimization_key": "product:race",
+            "domain": "landing-page",
+            "domain_version": 3,
+            "evaluator_version": 4,
+            "artifact_policy_version": 1,
+        }
+
+        def create() -> int:
+            return store.create_run(
+                "Race",
+                "model",
+                domain=contract["domain"],
+                optimization_key=contract["optimization_key"],
+            )
+
+        def resolve(run_id: int, prior: int | None, outcome: str, suffix: str) -> int | None:
+            return store.resolve_incumbent_challenge(
+                run_id=run_id,
+                contract=contract,
+                prior_incumbent_id=prior,
+                outcome=outcome,
+                evidence={"suffix": suffix},
+                candidate_iter=1,
+                candidate_html=f"<html>{suffix}</html>",
+                candidate_artifact_hash=f"hash-{suffix}",
+                candidate_primary_score=100.0,
+                candidate_holdout_score=100.0,
+                candidate_holdout_results={"score": 100.0},
+            )
+
+        first_id = resolve(create(), None, "established", "first")
+        replacement_id = resolve(create(), first_id, "replaced", "replacement")
+        stale_run = create()
+
+        with pytest.raises(IncumbentConflict) as caught:
+            resolve(stale_run, first_id, "replaced", "stale")
+
+        assert caught.value.current_incumbent_id == replacement_id
+        assert store.get_active_incumbent(**contract)["id"] == replacement_id
+        assert store.get_run(stale_run)["challenge_outcome"] is None
+
+        recorded_id = store.record_inconclusive_challenge(
+            run_id=stale_run,
+            contract=contract,
+            evidence={"decision": {"outcome": "inconclusive"}},
+        )
+        assert recorded_id == replacement_id
+        assert store.get_run(stale_run)["challenge_outcome"] == "inconclusive"
+        assert store.get_active_incumbent(**contract)["id"] == replacement_id
 
     def test_create_returns_monotonic_ids(self, store: Storage):
         ids = [store.create_run(f"b{i}", "m") for i in range(3)]

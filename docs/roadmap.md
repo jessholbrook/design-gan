@@ -116,13 +116,46 @@ All criteria above are met by `codex/product-optimization-roadmap`.
    - SQLite preserves incumbent lineage and challenge evidence. The CLI, API,
      run viewer, and scrubber expose the result without removing history.
 
+## Provenance, saturation, and concurrency follow-on — complete
+
+1. **Generated-run case capture**
+   - `capture-evaluator-case` extracts a frozen task and exact HTML from a stored
+     run iteration, records its run/iteration/task provenance and artifact hash,
+     and requires an explicit operator pass/fail label.
+   - Benchmark and calibration commands accept a case directory and reject
+     invalid, duplicate, or artifact-policy-violating fixtures.
+   - `/api/evaluator-cases` exposes case metadata and provenance without leaking
+     the captured HTML. Fixtures remain local by default because they contain
+     the complete generated artifact.
+2. **Expanded sequestered holdouts**
+   - Every concrete domain now freezes two development and two holdout scenarios.
+   - The second holdout adds a mobile-keyboard condition, reducing the chance
+     that a single pointer condition saturates while keeping the suite concrete.
+3. **Concurrent challenge arbitration**
+   - Ledger writes compare the incumbent evaluated by the challenger with the
+     active incumbent inside one immediate SQLite transaction.
+   - On conflict, the orchestrator fetches and replays the new incumbent once.
+     A second conflict records a non-mutating inconclusive challenge, preserving
+     the latest incumbent and bounded evaluator cost.
+   - Conflict/retry evidence is persisted and visible through the run API,
+     detail page, and existing scrubber.
+4. **Recorded corpus-v4 calibration**
+   - Corpus v4 adds mobile-keyboard success cases for all three domains.
+   - Semantic-v4 records 22/22 correct outcomes in
+     `docs/evaluator-benchmark-semantic-v4-corpus-v4.json`.
+   - Three isolated replays record 66/66 correct outcomes, 0% observed flakes,
+     and a five-trial recommendation in
+     `docs/evaluator-calibration-semantic-v4-corpus-v4.json`.
+
 ## Next research decisions
 
-- Collect and label a larger corpus from actual generated runs; use confidence
-  intervals as well as observed rates before claiming a stable flake bound.
-- Add multiple sequestered holdout scenarios per domain to reduce metric
-  saturation while keeping enough development feedback for search.
-- Define concurrent-challenge arbitration if multiple runs for the same product
-  key finish together; the current ledger assumes one final writer per product.
-- Reconsider a model actor only if it beats semantic-v4 on the expanded corpus
-  within explicit cost, latency, and repeatability budgets.
+- Use the capture path to accumulate reviewed pass and failure examples from
+  actual generated runs; the repository intentionally does not fabricate or
+  check in a private run fixture merely to claim real-run coverage.
+- Report confidence intervals and corpus composition alongside observed rates
+  before claiming a population flake or validity bound.
+- Reconsider a model actor only if it beats semantic-v4 on the expanded,
+  provenance-backed corpus within explicit cost, latency, and repeatability
+  budgets.
+- Add another product domain only when it has a specific mutable artifact,
+  frozen task contract, labeled failure cases, and a defensible north star.

@@ -101,9 +101,7 @@ def majority_error_probability(trials: int, flake_rate: float) -> float:
         raise ValueError("flake_rate must be between 0 and 0.5")
     threshold = trials // 2 + 1
     return sum(
-        math.comb(trials, count)
-        * (flake_rate**count)
-        * ((1 - flake_rate) ** (trials - count))
+        math.comb(trials, count) * (flake_rate**count) * ((1 - flake_rate) ** (trials - count))
         for count in range(threshold, trials + 1)
     )
 
@@ -131,14 +129,11 @@ async def run_calibration(
         raise ValueError("repetitions must be between 2 and 20")
     case_results: list[CaseCalibration] = []
     for case in cases:
-        evaluation = await evaluator(
-            case.html, tasks=(case.task,), trials_per_task=repetitions
-        )
+        evaluation = await evaluator(case.html, tasks=(case.task,), trials_per_task=repetitions)
         attempts = sorted(evaluation.tasks, key=lambda result: result.trial)
         if len(attempts) != repetitions:
             raise RuntimeError(
-                f"evaluator returned {len(attempts)} attempts for {case.id}; "
-                f"expected {repetitions}"
+                f"evaluator returned {len(attempts)} attempts for {case.id}; expected {repetitions}"
             )
         outcomes = [attempt.passed for attempt in attempts]
         case_results.append(
@@ -151,7 +146,7 @@ async def run_calibration(
         )
     max_flake = max((case.flake_rate for case in case_results), default=0.0)
     return CalibrationReport(
-        corpus_version=3,
+        corpus_version=evaluator_benchmark.CORPUS_VERSION,
         actor=actor,
         repetitions=repetitions,
         alpha=alpha,

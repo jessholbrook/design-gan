@@ -40,6 +40,15 @@ def _load_env() -> None:
         os.environ.pop("ANTHROPIC_API_KEY", None)
 
 
+def _benchmark_cases(case_dir: Path | None):
+    captured = evaluator_benchmark.load_case_directory(case_dir) if case_dir else ()
+    cases = (*evaluator_benchmark.BENCHMARK_CASES, *captured)
+    ids = [case.id for case in cases]
+    if len(ids) != len(set(ids)):
+        raise typer.BadParameter("built-in and captured evaluator case ids must be unique")
+    return cases
+
+
 @app.command()
 def run(
     brief: str = typer.Argument(..., help="Describe the site the generator should build."),
@@ -106,9 +115,10 @@ def run(
 @app.command("benchmark-evaluator")
 def benchmark_evaluator(
     json_out: Path = typer.Option(None, help="Optional path for the machine-readable report."),
+    case_dir: Path = typer.Option(None, help="Directory of captured real-run case fixtures."),
 ) -> None:
     """Run the labeled Chromium validity corpus against the semantic actor."""
-    report = asyncio.run(evaluator_benchmark.run_benchmark())
+    report = asyncio.run(evaluator_benchmark.run_benchmark(_benchmark_cases(case_dir)))
     table = Table(title=f"Evaluator benchmark · {report.actor}")
     for column in ("case", "domain", "expected", "actual", "result"):
         table.add_column(column)
@@ -142,10 +152,13 @@ def calibrate_evaluator(
         help="Target sign-test and majority-error budget.",
     ),
     json_out: Path = typer.Option(None, help="Optional path for the calibration report."),
+    case_dir: Path = typer.Option(None, help="Directory of captured real-run case fixtures."),
 ) -> None:
     """Replay the validity corpus to estimate flakes and trial defaults."""
     report = asyncio.run(
-        evaluation_calibration.run_calibration(repetitions=repetitions, alpha=alpha)
+        evaluation_calibration.run_calibration(
+            _benchmark_cases(case_dir), repetitions=repetitions, alpha=alpha
+        )
     )
     table = Table(title=f"Evaluator calibration · {report.actor}")
     for column in ("case", "domain", "mismatches", "flake rate"):
@@ -167,6 +180,43 @@ def calibrate_evaluator(
         console.print(f"report={json_out}")
     if report.mismatches:
         raise typer.Exit(1)
+
+
+@app.command("capture-evaluator-case")
+def capture_evaluator_case(
+    run_id: int = typer.Argument(..., min=1),
+    iteration: int = typer.Argument(..., min=1),
+    task_id: str = typer.Option(..., help="Frozen task id to label."),
+    case_id: str = typer.Option(..., help="Stable lowercase benchmark case id."),
+    label: str = typer.Option(..., help="Operator label: pass or fail."),
+    runs_dir: Path = typer.Option(None, help="Runs directory containing the sqlite db."),
+    out: Path = typer.Option(None, help="Output fixture path."),
+    overwrite: bool = typer.Option(False, help="Replace an existing fixture."),
+) -> None:
+    """Capture a labeled benchmark fixture from a stored design iteration."""
+    normalized_label = label.strip().lower()
+    if normalized_label not in {"pass", "fail"}:
+        raise typer.BadParameter("label must be pass or fail", param_hint="--label")
+    runs_dir = runs_dir or _default_runs_dir()
+    try:
+        case = evaluator_benchmark.capture_run_case(
+            storage.Storage(runs_dir / "design-gan.sqlite"),
+            run_id=run_id,
+            iteration=iteration,
+            task_id=task_id,
+            case_id=case_id,
+            expected_pass=normalized_label == "pass",
+        )
+    except ValueError as exc:
+        raise typer.BadParameter(str(exc)) from exc
+    out = out or runs_dir / "evaluator-corpus" / f"{case.id}.json"
+    if out.exists() and not overwrite:
+        raise typer.BadParameter(f"fixture already exists: {out}; pass --overwrite to replace it")
+    evaluator_benchmark.write_case_fixture(case, out)
+    console.print(f"captured={out}")
+    console.print(
+        "[yellow]Fixture contains the full generated HTML; review it before sharing.[/yellow]"
+    )
 
 
 @app.command()

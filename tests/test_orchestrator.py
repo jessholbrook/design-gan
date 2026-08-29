@@ -292,11 +292,7 @@ class TestConvergence:
             attempts = []
             for task in tasks:
                 for trial in range(1, trials_per_task + 1):
-                    passed = not (
-                        task.split == "holdout"
-                        and "incumbent" in html
-                        and phase[0] == 2
-                    )
+                    passed = not (task.split == "holdout" and "incumbent" in html and phase[0] == 2)
                     attempts.append(
                         browser_evaluator.TaskResult(
                             task_id=task.id,
@@ -339,6 +335,79 @@ class TestConvergence:
         active = storage.Storage(cfg.db_path).list_incumbents(active_only=True)
         assert len(active) == 1
         assert active[0]["run_id"] == second_result.run_id
+
+    def test_incumbent_arbitration_replays_once_after_concurrent_change(
+        self, cfg: orchestrator.LoopConfig, monkeypatch: pytest.MonkeyPatch
+    ):
+        cfg.max_iters = 1
+        cfg.patience = 1
+        cfg.optimization_key = "product:retry"
+        FakeRun(scores=[[3] * 10], task_scores=[100.0]).install(monkeypatch)
+        first = orchestrator.run_loop_sync(cfg)
+        first_id = storage.Storage(cfg.db_path).get_run(first.run_id)["incumbent_id"]
+
+        original = storage.Storage.resolve_incumbent_challenge
+        calls = 0
+
+        def conflict_once(self, **kwargs):
+            nonlocal calls
+            calls += 1
+            if calls == 1:
+                raise storage.IncumbentConflict(first_id)
+            return original(self, **kwargs)
+
+        monkeypatch.setattr(storage.Storage, "resolve_incumbent_challenge", conflict_once)
+        FakeRun(scores=[[3] * 10], task_scores=[100.0]).install(monkeypatch)
+        second = orchestrator.run_loop_sync(cfg)
+        saved = storage.Storage(cfg.db_path).get_run(second.run_id)
+
+        assert calls == 2
+        assert second.challenge_outcome == "retained"
+        assert saved["challenge_results"]["arbitration_attempt"] == 2
+        assert saved["challenge_results"]["arbitration_conflicts"] == [
+            {
+                "attempt": 1,
+                "observed_incumbent_id": first_id,
+                "current_incumbent_id": first_id,
+            }
+        ]
+
+    def test_repeated_incumbent_conflicts_end_inconclusive_without_replacement(
+        self, cfg: orchestrator.LoopConfig, monkeypatch: pytest.MonkeyPatch
+    ):
+        cfg.max_iters = 1
+        cfg.patience = 1
+        cfg.optimization_key = "product:busy"
+        FakeRun(scores=[[3] * 10], task_scores=[100.0]).install(monkeypatch)
+        first = orchestrator.run_loop_sync(cfg)
+        first_id = storage.Storage(cfg.db_path).get_run(first.run_id)["incumbent_id"]
+        calls = 0
+
+        def always_conflict(self, **kwargs):
+            nonlocal calls
+            calls += 1
+            raise storage.IncumbentConflict(first_id)
+
+        monkeypatch.setattr(storage.Storage, "resolve_incumbent_challenge", always_conflict)
+        FakeRun(scores=[[3] * 10], task_scores=[100.0]).install(monkeypatch)
+        second = orchestrator.run_loop_sync(cfg)
+        saved_store = storage.Storage(cfg.db_path)
+        saved = saved_store.get_run(second.run_id)
+
+        assert calls == 2
+        assert second.challenge_outcome == "inconclusive"
+        assert saved["challenge_outcome"] == "inconclusive"
+        assert len(saved["challenge_results"]["arbitration_conflicts"]) == 2
+        assert (
+            saved_store.get_active_incumbent(
+                optimization_key="product:busy",
+                domain=saved["domain"],
+                domain_version=saved["evaluation_plan"]["domain_version"],
+                evaluator_version=saved["evaluation_plan"]["evaluator_version"],
+                artifact_policy_version=saved["artifact_policy"]["version"],
+            )["id"]
+            == first_id
+        )
 
     def test_converges_when_scores_plateau(
         self, cfg: orchestrator.LoopConfig, monkeypatch: pytest.MonkeyPatch

@@ -298,7 +298,10 @@
         `<p class="scrub-feedback"><b>Cross-run challenge: ${
           escapeHtml(String(runMeta.challenge_outcome).replaceAll('_', ' '))
         }</b>${runMeta.incumbent_id == null ? '' :
-          ` · incumbent ${Number(runMeta.incumbent_id)}`}</p>`}
+          ` · incumbent ${Number(runMeta.incumbent_id)}`}${
+          !runMeta.challenge_results?.arbitration_conflicts?.length ? '' :
+            ` · concurrent retries ${runMeta.challenge_results.arbitration_conflicts.length}`
+        }</p>`}
       ${askedToFix()}
       <h3>Critic feedback</h3>
       <p class="scrub-feedback">${escapeHtml(it.feedback)}</p>

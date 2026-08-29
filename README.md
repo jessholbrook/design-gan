@@ -36,9 +36,10 @@ critic ──► SUS + feedback (diagnostic) ───────────�
   complete, standalone, offline HTML document no larger than 512 KiB.
 - **`browser_evaluator.py`** — replays frozen development scenarios across
   pointer/keyboard and desktop/mobile conditions for isolated trials, then runs
-  one untouched holdout scenario against the final promoted artifact.
+  two untouched holdout scenarios against the final promoted artifact.
 - **`evaluator_benchmark.py`** — runs a labeled Chromium validity corpus without
-  connecting experimental actors to the optimization loop.
+  connecting experimental actors to the optimization loop, and captures
+  operator-labeled cases from stored iterations with provenance.
 - **`evaluation_calibration.py`** — repeats the labeled corpus, measures observed
   mismatches/flakes, and derives the smallest odd trial count that satisfies
   both majority stability and the exact sign-test threshold.
@@ -61,7 +62,8 @@ critic ──► SUS + feedback (diagnostic) ───────────�
   stops after `patience` rejections or at `max_iters`.
 - **`storage.py`** — migration-safe SQLite run/iteration history, including the
   frozen plan and artifact policy, candidate lineage, task evidence,
-  diagnostic scores, guardrails, and promotion evidence.
+  diagnostic scores, guardrails, promotion evidence, and compare-and-swap
+  protection for concurrent incumbent challenges.
 - **`viewer.py`** — FastAPI viewer to browse iterations, plus a scrubber
   (`/runs/{id}/scrub`) for stepping through the evolution with a before/after
   compare slider.
@@ -88,6 +90,10 @@ design-gan run "A single-product storefront for a lightweight travel mug." \
   --domain storefront --optimization-key travel-mug
 design-gan benchmark-evaluator
 design-gan calibrate-evaluator --repetitions 3
+# Capture an operator-labeled generated case, then include captured cases
+design-gan capture-evaluator-case 12 3 --task-id landing-primary-desktop \
+  --case-id run-12-primary-failure --label fail
+design-gan benchmark-evaluator --case-dir runs/evaluator-corpus
 design-gan list-runs
 design-gan list-incumbents
 
@@ -164,7 +170,7 @@ pip install -e ".[dev]"
 pytest
 ```
 
-263 tests covering the browser-evaluator and artifact contracts, primary
+270 tests covering the browser-evaluator and artifact contracts, primary
 scoring, paired promotion decisions, storage (schema + migration), the extractor
 helpers, the orchestrator loop (with generator/critic/renderer faked), the
 viewer's HTTP endpoints (including the scrubber route), and the CLI.
@@ -188,14 +194,15 @@ viewer's HTTP endpoints (including the scrubber route), and the CLI.
   contexts. A candidate must improve enough and its paired binary outcomes must
   clear the configured one-sided sign test. The p-value, comparable trials,
   wins, losses, effect, reason, and parent iteration are persisted.
-- **Untouched final holdout.** Development scenarios drive the adaptive loop.
-  The holdout is not included in generator feedback and runs once against the
-  final promoted artifact; it is an audit, not another tuning signal.
+- **Untouched final holdouts.** Development scenarios drive the adaptive loop.
+  Two holdout conditions per domain are excluded from generator feedback and
+  run only against the final promoted artifact; they are an audit, not another
+  tuning signal.
 - **Actor admission is evidence-based.** The recorded semantic-v4 baseline is
-  19/19 on labeled corpus v3. Its three-replay calibration is 57/57 with 0%
-  observed flakes. This is evidence for the current default, not proof of a zero
-  population flake rate. A model-driven actor remains outside the loop until it
-  demonstrates better validity within cost and repeatability budgets.
+  22/22 on labeled corpus v4. Its three-replay calibration is 66/66 with 0%
+  observed flakes. This is evidence for the current default, not proof of a
+  zero population flake rate. A model-driven actor remains outside the loop
+  until it demonstrates better validity within cost and repeatability budgets.
 - **Calibrated repeated trials.** At α=0.05, five all-win discordant pairs are
   the smallest exact sign test that clears the threshold (p=0.03125). With no
   flakes observed in the recorded corpus, the default is therefore five trials,
@@ -204,7 +211,9 @@ viewer's HTTP endpoints (including the scrubber route), and the CLI.
   for the same product; without one, a stable normalized-brief key is used.
   The final candidate and current incumbent are freshly evaluated on the same
   holdout. Only a fully passing, significantly better challenger replaces the
-  incumbent; ties and inconclusive audits preserve it.
+  incumbent; ties and inconclusive audits preserve it. If the incumbent changes
+  during evaluation, arbitration replays once against the new incumbent, then
+  records a non-mutating inconclusive result if contention persists.
 - **Convergence.** "No further improvements" is operationalized as
   `patience` iterations without an eligible primary-score gain of at least
   `tolerance` points.
@@ -226,6 +235,7 @@ New behavior requires a versioned product-domain profile, labeled benchmark
 cases, and a concrete evaluator implementation.
 
 The completed concrete roadmap is in [`docs/roadmap.md`](docs/roadmap.md).
-Remaining research is data collection and saturation resistance: ingest labeled
-failures from real generated runs, grow each domain beyond one holdout scenario,
-and calibrate again on a larger sample before widening the mutable artifact.
+Remaining research is evidence collection: accumulate reviewed cases from real
+generated runs, use confidence intervals before making population-level claims,
+and admit a model-driven actor only if it beats the semantic baseline within
+explicit cost, latency, and repeatability budgets.
