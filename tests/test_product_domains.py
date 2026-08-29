@@ -28,7 +28,7 @@ def test_plan_freezes_versions_trials_and_promotion_policy():
     payload = plan.to_dict()
     assert payload["domain"] == "lead-generation"
     assert payload["domain_version"] == 2
-    assert payload["evaluator_version"] == 3
+    assert payload["evaluator_version"] == 4
     assert payload["trials_per_task"] == 8
     assert len(plan.development_tasks) == 2
     assert len(plan.holdout_tasks) == 1

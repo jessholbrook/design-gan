@@ -294,6 +294,11 @@
           runMeta.holdout_passed ? 'PASS' : 'FAIL'
         }</b>${runMeta.holdout_score == null ? '' :
           ` · score ${Number(runMeta.holdout_score).toFixed(0)}`}</p>`}
+      ${runMeta.challenge_outcome == null ? '' :
+        `<p class="scrub-feedback"><b>Cross-run challenge: ${
+          escapeHtml(String(runMeta.challenge_outcome).replaceAll('_', ' '))
+        }</b>${runMeta.incumbent_id == null ? '' :
+          ` · incumbent ${Number(runMeta.incumbent_id)}`}</p>`}
       ${askedToFix()}
       <h3>Critic feedback</h3>
       <p class="scrub-feedback">${escapeHtml(it.feedback)}</p>

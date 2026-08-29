@@ -233,6 +233,7 @@ class TestStartRunValidation:
                 "design_domain": "lead-generation",
                 "evaluation_trials": 8,
                 "promotion_alpha": 0.1,
+                "optimization_key": "product:sales",
             },
         )
 
@@ -253,6 +254,8 @@ class TestStartRunValidation:
         ]
         assert run["evaluation_plan"]["trials_per_task"] == 8
         assert run["evaluation_plan"]["promotion_alpha"] == pytest.approx(0.1)
+        assert run["optimization_key"] == "product:sales"
+        assert "product:sales" in client.get(f"/runs/{run_id}").text
 
 
 class TestStartTokenGate:
@@ -300,7 +303,7 @@ class TestStartTokenGate:
             "landing-primary-keyboard",
             "landing-primary-mobile-holdout",
         ]
-        assert run["evaluation_plan"]["trials_per_task"] == 6
+        assert run["evaluation_plan"]["trials_per_task"] == 5
         assert run["evaluation_plan"]["promotion_alpha"] == pytest.approx(0.05)
         assert run["artifact_policy"]["kind"] == "standalone-html"
         assert run["artifact_policy"]["network_access"] is False
@@ -317,10 +320,36 @@ class TestStartTokenGate:
             passed=False,
             results={"score": 50.0, "audited_iter": 4},
         )
+        contract = {
+            "optimization_key": "product:demo",
+            "domain": "landing-page",
+            "domain_version": 2,
+            "evaluator_version": 4,
+            "artifact_policy_version": 1,
+        }
+        viewer._store().set_run_optimization_key(1, contract["optimization_key"])
+        viewer._store().resolve_incumbent_challenge(
+            run_id=1,
+            contract=contract,
+            prior_incumbent_id=None,
+            outcome="established",
+            evidence={"decision": {"outcome": "established"}},
+            candidate_iter=1,
+            candidate_html="<html>demo</html>",
+            candidate_artifact_hash="hash",
+            candidate_primary_score=100.0,
+            candidate_holdout_score=100.0,
+            candidate_holdout_results={"score": 100.0},
+        )
         detail = gated_client.get("/runs/1")
         scrub_js = gated_client.get("/static/scrub.js")
         assert "Final untouched holdout: FAIL" in detail.text
         assert "Final untouched holdout" in scrub_js.text
+        assert "Cross-run challenge: established" in detail.text
+        assert "Cross-run challenge" in scrub_js.text
+        incumbents = gated_client.get("/api/incumbents").json()
+        assert incumbents[0]["optimization_key"] == "product:demo"
+        assert "html" not in incumbents[0]
 
     def test_bearer_header_accepted(
         self, gated_client: TestClient, monkeypatch: pytest.MonkeyPatch

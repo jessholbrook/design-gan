@@ -30,6 +30,7 @@ from . import (
     conversation_generator,
     critic,
     generator,
+    incumbent_ledger,
     product_domains,
     promotion,
     renderer,
@@ -76,8 +77,9 @@ class LoopConfig:
     # persisted on the run; design_tasks remains an escape hatch for existing
     # programmatic callers and tests.
     design_domain: str = "landing-page"
-    evaluation_trials: int = 6
-    promotion_alpha: float = 0.05
+    evaluation_trials: int = product_domains.DEFAULT_EVALUATION_TRIALS
+    promotion_alpha: float = product_domains.DEFAULT_PROMOTION_ALPHA
+    optimization_key: str | None = None
     design_tasks: tuple[browser_evaluator.BrowserTask, ...] | None = None
     artifact_policy: artifact_policy.ArtifactPolicy = artifact_policy.DEFAULT_ARTIFACT_POLICY
 
@@ -91,6 +93,7 @@ class LoopResult:
     status: str  # "converged" | "exhausted" | "errored" | "budget_exhausted"
     holdout_score: float | None = None
     holdout_passed: bool | None = None
+    challenge_outcome: str | None = None
 
 
 @dataclass
@@ -137,7 +140,7 @@ def _design_evaluation_plan(cfg: LoopConfig) -> product_domains.EvaluationPlan:
     return product_domains.EvaluationPlan(
         domain="custom",
         domain_version=1,
-        evaluator_version=3,
+        evaluator_version=4,
         trials_per_task=cfg.evaluation_trials,
         promotion_alpha=cfg.promotion_alpha,
         minimum_effect=cfg.tolerance,
@@ -373,6 +376,11 @@ async def _run_shared_loop(
     console = console or Console()
     store = storage.Storage(cfg.db_path)
     design_plan = _design_evaluation_plan(cfg) if kind == KIND_DESIGN else None
+    ledger_key = (
+        incumbent_ledger.optimization_key(cfg.brief, cfg.optimization_key)
+        if design_plan is not None
+        else None
+    )
     if run_id is None:
         suite = [task.to_dict() for task in design_plan.tasks] if design_plan else None
         run_id = store.create_run(
@@ -383,7 +391,14 @@ async def _run_shared_loop(
             evaluation_plan=design_plan.to_dict() if design_plan else None,
             artifact_policy=(cfg.artifact_policy.to_dict() if kind == KIND_DESIGN else None),
             domain=design_plan.domain if design_plan else None,
+            optimization_key=ledger_key,
         )
+    elif ledger_key is not None:
+        existing_run = store.get_run(run_id)
+        if existing_run and existing_run.get("optimization_key"):
+            ledger_key = existing_run["optimization_key"]
+        else:
+            store.set_run_optimization_key(run_id, ledger_key)
     run_dir = cfg.runs_dir / f"run_{run_id:04d}"
     run_dir.mkdir(parents=True, exist_ok=True)
 
@@ -397,6 +412,7 @@ async def _run_shared_loop(
     final_error: str | None = None
     holdout_score: float | None = None
     holdout_passed: bool | None = None
+    challenge_outcome: str | None = None
     i = 0
 
     try:
@@ -553,6 +569,7 @@ async def _run_shared_loop(
                 f"[dim]auditing final candidate on {len(design_plan.holdout_tasks)} "
                 "untouched holdout scenario(s)...[/dim]"
             )
+            holdout: browser_evaluator.EvaluationResult | None = None
             try:
                 holdout = await browser_evaluator.evaluate(
                     best.artifact,
@@ -576,6 +593,79 @@ async def _run_shared_loop(
                     "audited_iter": best.iter,
                     "error": f"{type(exc).__name__}: {exc}",
                 }
+
+            contract = incumbent_ledger.LedgerContract(
+                optimization_key=ledger_key or incumbent_ledger.optimization_key(cfg.brief),
+                domain=design_plan.domain,
+                domain_version=design_plan.domain_version,
+                evaluator_version=design_plan.evaluator_version,
+                artifact_policy_version=cfg.artifact_policy.version,
+            )
+            incumbent = store.get_active_incumbent(**contract.to_dict())
+            incumbent_holdout: browser_evaluator.EvaluationResult | None = None
+            incumbent_payload: dict[str, Any] | None = None
+            if incumbent is not None:
+                console.print(
+                    f"[dim]challenging incumbent {incumbent['id']} on the same holdout...[/dim]"
+                )
+                try:
+                    incumbent_holdout = await browser_evaluator.evaluate(
+                        incumbent["html"],
+                        tasks=design_plan.holdout_tasks,
+                        viewport=cfg.viewport,
+                        trials_per_task=design_plan.trials_per_task,
+                    )
+                    incumbent_payload = incumbent_holdout.to_dict()
+                    incumbent_payload["incumbent_id"] = incumbent["id"]
+                    browser_evaluator.write_artifact(
+                        incumbent_holdout,
+                        run_dir,
+                        filename="incumbent_holdout_evaluation.json",
+                    )
+                except Exception as exc:  # noqa: BLE001 - preserve incumbent on audit failure
+                    incumbent_payload = {
+                        "incumbent_id": incumbent["id"],
+                        "error": f"{type(exc).__name__}: {exc}",
+                    }
+
+            if holdout is None:
+                challenge = incumbent_ledger.ChallengeDecision("rejected_holdout", None)
+            elif incumbent is not None and incumbent_holdout is None:
+                challenge = incumbent_ledger.ChallengeDecision("inconclusive", None)
+            else:
+                challenge = incumbent_ledger.decide_challenge(
+                    candidate=holdout,
+                    candidate_passed=bool(holdout_passed),
+                    incumbent=incumbent_holdout,
+                    minimum_effect=design_plan.minimum_effect,
+                    alpha=design_plan.promotion_alpha,
+                )
+            challenge_outcome = challenge.outcome
+            challenge_evidence = {
+                "contract": contract.to_dict(),
+                "candidate": dict(holdout_payload),
+                "prior_incumbent": incumbent_payload,
+                "decision": challenge.to_dict(),
+            }
+            try:
+                resulting_incumbent_id = store.resolve_incumbent_challenge(
+                    run_id=run_id,
+                    contract=contract.to_dict(),
+                    prior_incumbent_id=incumbent["id"] if incumbent else None,
+                    outcome=challenge.outcome,
+                    evidence=challenge_evidence,
+                    candidate_iter=best.iter or 0,
+                    candidate_html=best.artifact,
+                    candidate_artifact_hash=incumbent_ledger.artifact_hash(best.artifact),
+                    candidate_primary_score=best_score or 0.0,
+                    candidate_holdout_score=holdout_score or 0.0,
+                    candidate_holdout_results=holdout_payload,
+                )
+                challenge_evidence["resulting_incumbent_id"] = resulting_incumbent_id
+            except Exception as exc:  # noqa: BLE001 - holdout remains valid if ledger write fails
+                challenge_outcome = "inconclusive"
+                challenge_evidence["ledger_error"] = f"{type(exc).__name__}: {exc}"
+            holdout_payload["ledger"] = challenge_evidence
             store.save_holdout_audit(
                 run_id,
                 score=holdout_score,
@@ -586,6 +676,7 @@ async def _run_shared_loop(
                 f"[dim]holdout:[/dim] {'PASS' if holdout_passed else 'FAIL'}"
                 + (f" score={holdout_score:.1f}" if holdout_score is not None else "")
             )
+            console.print(f"[dim]incumbent challenge:[/dim] {challenge_outcome}")
         # If no iteration ever completed, persist nulls rather than a sentinel
         # 0/0.0 that the UI would otherwise render as a real score.
         final_best_iter = best_iter if best_iter > 0 else None
@@ -599,6 +690,7 @@ async def _run_shared_loop(
         status=status,
         holdout_score=holdout_score,
         holdout_passed=holdout_passed,
+        challenge_outcome=challenge_outcome,
     )
 
 

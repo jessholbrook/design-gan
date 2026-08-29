@@ -1,9 +1,9 @@
 """Concrete browser-task evaluation for design runs.
 
 The supported domains remain deliberately small: primary-action activation for
-landing pages and successful form completion for lead-generation pages. The
-same immutable suite is replayed from a clean browser page for every candidate
-in a run.
+landing pages, successful form completion for lead-generation pages, and
+add-to-cart confirmation for storefronts. The same immutable suite is replayed
+from a clean browser page for every candidate in a run.
 
 Task completion is the design loop's primary metric. Runtime errors observed
 while performing the task are reported separately so the scorer can use them
@@ -16,6 +16,7 @@ from __future__ import annotations
 import asyncio
 import json
 import re
+from collections import Counter
 from collections.abc import Iterable
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
@@ -123,6 +124,12 @@ _CART_EVIDENCE = re.compile(
     r"\b(added to (?:cart|bag)|in your (?:cart|bag)|(?:cart|bag)\s*[:(]?\s*[1-9])",
     re.IGNORECASE,
 )
+_FORM_SUCCESS_EVIDENCE = re.compile(
+    r"\b(thank(?:s| you)|success(?:ful|fully)?|submitted|received|sent|"
+    r"confirmation|we(?:'|’)ll be in touch)\b",
+    re.IGNORECASE,
+)
+_PRIMARY_ACTION_MIN_SCORE = 40
 
 
 def frozen_suite(tasks: Iterable[BrowserTask] | None = None) -> tuple[BrowserTask, ...]:
@@ -203,6 +210,15 @@ def _form_score(candidate: dict[str, Any]) -> int:
     return score
 
 
+def _evidence_counts(pattern: re.Pattern[str], value: str) -> Counter[str]:
+    """Count normalized semantic evidence so pre-existing copy is not a response."""
+    return Counter(match.group(0).lower() for match in pattern.finditer(value))
+
+
+def _new_evidence(pattern: re.Pattern[str], before: str, after: str) -> bool:
+    return bool(_evidence_counts(pattern, after) - _evidence_counts(pattern, before))
+
+
 async def _primary_action(page: Any, task: BrowserTask) -> TaskResult:
     page_errors: list[str] = []
     console_errors: list[str] = []
@@ -260,6 +276,15 @@ async def _primary_action(page: Any, task: BrowserTask) -> TaskResult:
     score_candidate = _cart_candidate_score if behavior == "cart-addition" else _candidate_score
     candidate = max(visible, key=score_candidate)
     label = candidate.get("text") or candidate.get("ariaLabel") or candidate.get("tag")
+    if behavior == "primary-action" and _candidate_score(candidate) < _PRIMARY_ACTION_MIN_SCORE:
+        return TaskResult(
+            task_id=task.id,
+            name=task.name,
+            instruction=task.instruction,
+            passed=False,
+            target=str(label),
+            observed=["no control had enough primary-action evidence"],
+        )
     if candidate.get("disabled"):
         return TaskResult(
             task_id=task.id,
@@ -310,9 +335,9 @@ async def _primary_action(page: Any, task: BrowserTask) -> TaskResult:
     errors.extend(runtime_errors)
     if behavior == "cart-addition":
         cart_evidence = []
-        if _CART_EVIDENCE.search(after_text) and after_text != before_text:
+        if _new_evidence(_CART_EVIDENCE, before_text, after_text):
             cart_evidence.append("visible cart state changed")
-        if _CART_EVIDENCE.search(after_url) and after_url != before_url:
+        if _new_evidence(_CART_EVIDENCE, before_url, after_url):
             cart_evidence.append("navigated to cart state")
         observed = cart_evidence
         passed = bool(cart_evidence) and not errors
@@ -442,6 +467,8 @@ async def _form_completion(page: Any, task: BrowserTask) -> TaskResult:
         errors.append(f"submission failed: {type(exc).__name__}: {exc}")
 
     observed: list[str] = []
+    after_url = before_url
+    after_text = before_text
     try:
         if not page.is_closed():
             after_url = page.url
@@ -460,9 +487,15 @@ async def _form_completion(page: Any, task: BrowserTask) -> TaskResult:
     if popups:
         observed.append("opened a new window")
     errors.extend([*page_errors, *console_errors])
-    passed = bool(observed) and not errors
-    if not observed and not errors:
-        observed.append("submission produced no observable response")
+    meaningful_response = (
+        _new_evidence(_FORM_SUCCESS_EVIDENCE, before_text, after_text)
+        or after_url != before_url
+        or bool(dialogs)
+        or bool(popups)
+    )
+    passed = meaningful_response and not errors
+    if not meaningful_response and not errors:
+        observed.append("submission produced no semantic success response")
     return TaskResult(
         task_id=task.id,
         name=task.name,

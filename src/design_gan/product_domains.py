@@ -7,6 +7,9 @@ from typing import Any
 
 from .browser_evaluator import BrowserTask
 
+DEFAULT_EVALUATION_TRIALS = 5
+DEFAULT_PROMOTION_ALPHA = 0.05
+
 
 @dataclass(frozen=True)
 class ProductDomain:
@@ -178,8 +181,8 @@ def get_domain(domain_id: str) -> ProductDomain:
 def make_plan(
     domain_id: str = "landing-page",
     *,
-    trials_per_task: int = 6,
-    promotion_alpha: float = 0.05,
+    trials_per_task: int = DEFAULT_EVALUATION_TRIALS,
+    promotion_alpha: float = DEFAULT_PROMOTION_ALPHA,
     minimum_effect: float = 1.0,
 ) -> EvaluationPlan:
     if trials_per_task < 1 or trials_per_task > 50:
@@ -192,7 +195,7 @@ def make_plan(
     return EvaluationPlan(
         domain=domain.id,
         domain_version=domain.version,
-        evaluator_version=3,
+        evaluator_version=4,
         trials_per_task=trials_per_task,
         promotion_alpha=promotion_alpha,
         minimum_effect=minimum_effect,

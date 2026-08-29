@@ -16,6 +16,8 @@ def test_help_shows_commands():
     for cmd in (
         "run",
         "benchmark-evaluator",
+        "calibrate-evaluator",
+        "list-incumbents",
         "list-runs",
         "demo",
         "viewer",
@@ -43,6 +45,12 @@ def test_list_runs_empty(tmp_path: Path):
     r = runner.invoke(app, ["list-runs", "--runs-dir", str(tmp_path)])
     assert r.exit_code == 0
     assert "No runs" in r.output
+
+
+def test_list_incumbents_empty(tmp_path: Path):
+    r = CliRunner().invoke(app, ["list-incumbents", "--runs-dir", str(tmp_path)])
+    assert r.exit_code == 0
+    assert "No incumbents" in r.output
 
 
 def test_demo_seeds_and_then_list_runs_shows_it(tmp_path: Path):

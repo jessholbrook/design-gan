@@ -60,7 +60,7 @@ class TestInitAndSchema:
                 row[0]
                 for row in c.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()
             }
-        assert {"runs", "iterations"}.issubset(tables)
+        assert {"runs", "iterations", "incumbents", "incumbent_challenges"}.issubset(tables)
 
     def test_runs_has_progress_columns(self, store: Storage):
         with sqlite3.connect(store.db_path) as c:
@@ -79,6 +79,10 @@ class TestInitAndSchema:
             "holdout_score",
             "holdout_passed",
             "holdout_results",
+            "optimization_key",
+            "incumbent_id",
+            "challenge_outcome",
+            "challenge_results",
         }.issubset(run_cols)
         assert {
             "primary_score",
@@ -215,6 +219,80 @@ class TestRuns:
         assert run["holdout_passed"] is True
         assert run["holdout_results"] == payload
         assert run["holdout_evaluated_at"] is not None
+
+    def test_incumbent_challenges_establish_retain_and_replace(self, store: Storage):
+        contract = {
+            "optimization_key": "product:coffee",
+            "domain": "landing-page",
+            "domain_version": 2,
+            "evaluator_version": 4,
+            "artifact_policy_version": 1,
+        }
+
+        def create() -> int:
+            return store.create_run(
+                "Coffee",
+                "model",
+                domain="landing-page",
+                optimization_key=contract["optimization_key"],
+            )
+
+        first_run = create()
+        first_id = store.resolve_incumbent_challenge(
+            run_id=first_run,
+            contract=contract,
+            prior_incumbent_id=None,
+            outcome="established",
+            evidence={"decision": "initial"},
+            candidate_iter=2,
+            candidate_html="<html>one</html>",
+            candidate_artifact_hash="hash-one",
+            candidate_primary_score=100.0,
+            candidate_holdout_score=100.0,
+            candidate_holdout_results={"score": 100.0},
+        )
+        assert first_id is not None
+        active = store.get_active_incumbent(**contract)
+        assert active["id"] == first_id
+        assert active["html"] == "<html>one</html>"
+
+        retained_run = create()
+        retained_id = store.resolve_incumbent_challenge(
+            run_id=retained_run,
+            contract=contract,
+            prior_incumbent_id=first_id,
+            outcome="retained",
+            evidence={"decision": "tie"},
+            candidate_iter=1,
+            candidate_html="<html>tie</html>",
+            candidate_artifact_hash="hash-tie",
+            candidate_primary_score=100.0,
+            candidate_holdout_score=100.0,
+            candidate_holdout_results={"score": 100.0},
+        )
+        assert retained_id == first_id
+        assert store.get_run(retained_run)["challenge_outcome"] == "retained"
+
+        replacement_run = create()
+        replacement_id = store.resolve_incumbent_challenge(
+            run_id=replacement_run,
+            contract=contract,
+            prior_incumbent_id=first_id,
+            outcome="replaced",
+            evidence={"decision": "significant"},
+            candidate_iter=3,
+            candidate_html="<html>two</html>",
+            candidate_artifact_hash="hash-two",
+            candidate_primary_score=100.0,
+            candidate_holdout_score=100.0,
+            candidate_holdout_results={"score": 100.0},
+        )
+        assert replacement_id != first_id
+        history = store.list_incumbents(active_only=False)
+        assert len(history) == 2
+        assert [item["active"] for item in history] == [True, False]
+        assert history[0]["supersedes_id"] == first_id
+        assert "html" not in history[0]
 
     def test_create_returns_monotonic_ids(self, store: Storage):
         ids = [store.create_run(f"b{i}", "m") for i in range(3)]

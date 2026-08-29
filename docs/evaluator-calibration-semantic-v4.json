@@ -1,0 +1,260 @@
+{
+  "corpus_version": 3,
+  "actor": "semantic-v4",
+  "repetitions": 3,
+  "alpha": 0.05,
+  "attempts": 57,
+  "mismatches": 0,
+  "accuracy": 1.0,
+  "max_flake_rate": 0.0,
+  "recommended_trials": 5,
+  "cases": [
+    {
+      "id": "landing-marked-action",
+      "domain": "landing-page",
+      "expected_pass": true,
+      "outcomes": [
+        true,
+        true,
+        true
+      ],
+      "mismatches": 0,
+      "mismatch_rate": 0.0,
+      "flake_rate": 0.0
+    },
+    {
+      "id": "landing-keyboard-action",
+      "domain": "landing-page",
+      "expected_pass": true,
+      "outcomes": [
+        true,
+        true,
+        true
+      ],
+      "mismatches": 0,
+      "mismatch_rate": 0.0,
+      "flake_rate": 0.0
+    },
+    {
+      "id": "landing-no-response",
+      "domain": "landing-page",
+      "expected_pass": false,
+      "outcomes": [
+        false,
+        false,
+        false
+      ],
+      "mismatches": 0,
+      "mismatch_rate": 0.0,
+      "flake_rate": 0.0
+    },
+    {
+      "id": "landing-disabled-action",
+      "domain": "landing-page",
+      "expected_pass": false,
+      "outcomes": [
+        false,
+        false,
+        false
+      ],
+      "mismatches": 0,
+      "mismatch_rate": 0.0,
+      "flake_rate": 0.0
+    },
+    {
+      "id": "landing-mobile-hidden-action",
+      "domain": "landing-page",
+      "expected_pass": false,
+      "outcomes": [
+        false,
+        false,
+        false
+      ],
+      "mismatches": 0,
+      "mismatch_rate": 0.0,
+      "flake_rate": 0.0
+    },
+    {
+      "id": "landing-cookie-control-only",
+      "domain": "landing-page",
+      "expected_pass": false,
+      "outcomes": [
+        false,
+        false,
+        false
+      ],
+      "mismatches": 0,
+      "mismatch_rate": 0.0,
+      "flake_rate": 0.0
+    },
+    {
+      "id": "landing-primary-among-cookie-controls",
+      "domain": "landing-page",
+      "expected_pass": true,
+      "outcomes": [
+        true,
+        true,
+        true
+      ],
+      "mismatches": 0,
+      "mismatch_rate": 0.0,
+      "flake_rate": 0.0
+    },
+    {
+      "id": "landing-action-runtime-error",
+      "domain": "landing-page",
+      "expected_pass": false,
+      "outcomes": [
+        false,
+        false,
+        false
+      ],
+      "mismatches": 0,
+      "mismatch_rate": 0.0,
+      "flake_rate": 0.0
+    },
+    {
+      "id": "lead-marked-form",
+      "domain": "lead-generation",
+      "expected_pass": true,
+      "outcomes": [
+        true,
+        true,
+        true
+      ],
+      "mismatches": 0,
+      "mismatch_rate": 0.0,
+      "flake_rate": 0.0
+    },
+    {
+      "id": "lead-primary-among-distractors",
+      "domain": "lead-generation",
+      "expected_pass": true,
+      "outcomes": [
+        true,
+        true,
+        true
+      ],
+      "mismatches": 0,
+      "mismatch_rate": 0.0,
+      "flake_rate": 0.0
+    },
+    {
+      "id": "lead-keyboard-form",
+      "domain": "lead-generation",
+      "expected_pass": true,
+      "outcomes": [
+        true,
+        true,
+        true
+      ],
+      "mismatches": 0,
+      "mismatch_rate": 0.0,
+      "flake_rate": 0.0
+    },
+    {
+      "id": "lead-no-success-state",
+      "domain": "lead-generation",
+      "expected_pass": false,
+      "outcomes": [
+        false,
+        false,
+        false
+      ],
+      "mismatches": 0,
+      "mismatch_rate": 0.0,
+      "flake_rate": 0.0
+    },
+    {
+      "id": "lead-missing-form",
+      "domain": "lead-generation",
+      "expected_pass": false,
+      "outcomes": [
+        false,
+        false,
+        false
+      ],
+      "mismatches": 0,
+      "mismatch_rate": 0.0,
+      "flake_rate": 0.0
+    },
+    {
+      "id": "lead-spinner-without-success",
+      "domain": "lead-generation",
+      "expected_pass": false,
+      "outcomes": [
+        false,
+        false,
+        false
+      ],
+      "mismatches": 0,
+      "mismatch_rate": 0.0,
+      "flake_rate": 0.0
+    },
+    {
+      "id": "lead-explicit-received-state",
+      "domain": "lead-generation",
+      "expected_pass": true,
+      "outcomes": [
+        true,
+        true,
+        true
+      ],
+      "mismatches": 0,
+      "mismatch_rate": 0.0,
+      "flake_rate": 0.0
+    },
+    {
+      "id": "storefront-cart-state",
+      "domain": "storefront",
+      "expected_pass": true,
+      "outcomes": [
+        true,
+        true,
+        true
+      ],
+      "mismatches": 0,
+      "mismatch_rate": 0.0,
+      "flake_rate": 0.0
+    },
+    {
+      "id": "storefront-keyboard-cart",
+      "domain": "storefront",
+      "expected_pass": true,
+      "outcomes": [
+        true,
+        true,
+        true
+      ],
+      "mismatches": 0,
+      "mismatch_rate": 0.0,
+      "flake_rate": 0.0
+    },
+    {
+      "id": "storefront-generic-change",
+      "domain": "storefront",
+      "expected_pass": false,
+      "outcomes": [
+        false,
+        false,
+        false
+      ],
+      "mismatches": 0,
+      "mismatch_rate": 0.0,
+      "flake_rate": 0.0
+    },
+    {
+      "id": "storefront-preexisting-cart-count",
+      "domain": "storefront",
+      "expected_pass": false,
+      "outcomes": [
+        false,
+        false,
+        false
+      ],
+      "mismatches": 0,
+      "mismatch_rate": 0.0,
+      "flake_rate": 0.0
+    }
+  ]
+}

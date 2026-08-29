@@ -11,7 +11,14 @@ from dotenv import load_dotenv
 from rich.console import Console
 from rich.table import Table
 
-from . import evaluator_benchmark, orchestrator, product_domains, storage
+from . import (
+    evaluation_calibration,
+    evaluator_benchmark,
+    incumbent_ledger,
+    orchestrator,
+    product_domains,
+    storage,
+)
 
 app = typer.Typer(add_completion=False, help="Autoresearch-style design evolution loop.")
 console = Console()
@@ -46,10 +53,20 @@ def run(
         help="Frozen product domain: landing-page, lead-generation, or storefront.",
     ),
     evaluation_trials: int = typer.Option(
-        6, min=1, max=50, help="Repeated browser trials per frozen task."
+        product_domains.DEFAULT_EVALUATION_TRIALS,
+        min=1,
+        max=50,
+        help="Repeated browser trials per frozen task.",
     ),
     promotion_alpha: float = typer.Option(
-        0.05, min=0.0001, max=1.0, help="One-sided promotion significance threshold."
+        product_domains.DEFAULT_PROMOTION_ALPHA,
+        min=0.0001,
+        max=1.0,
+        help="One-sided promotion significance threshold.",
+    ),
+    optimization_key: str = typer.Option(
+        None,
+        help="Optional stable product key for cross-run incumbent challenges.",
     ),
 ) -> None:
     """Run one evolution loop for BRIEF until the score plateaus."""
@@ -57,8 +74,9 @@ def run(
     runs_dir = runs_dir or _default_runs_dir()
     try:
         product_domains.get_domain(domain)
+        ledger_key = incumbent_ledger.optimization_key(brief, optimization_key)
     except ValueError as exc:
-        raise typer.BadParameter(str(exc), param_hint="--domain") from exc
+        raise typer.BadParameter(str(exc)) from exc
     cfg = orchestrator.LoopConfig(
         brief=brief,
         runs_dir=runs_dir,
@@ -70,6 +88,7 @@ def run(
         design_domain=domain,
         evaluation_trials=evaluation_trials,
         promotion_alpha=promotion_alpha,
+        optimization_key=ledger_key,
     )
     result = orchestrator.run_loop_sync(cfg, console=console)
     console.rule("[bold green]Done")
@@ -79,7 +98,8 @@ def run(
         f"run_id={result.run_id}  best_iter={best_iter_txt}  "
         f"best_score={best_score_txt}  iters={result.iterations}  "
         f"status={result.status}  "
-        f"holdout={('pass' if result.holdout_passed else 'fail') if result.holdout_passed is not None else 'n/a'}"
+        f"holdout={('pass' if result.holdout_passed else 'fail') if result.holdout_passed is not None else 'n/a'}  "
+        f"challenge={result.challenge_outcome or 'n/a'}"
     )
 
 
@@ -112,6 +132,43 @@ def benchmark_evaluator(
         raise typer.Exit(1)
 
 
+@app.command("calibrate-evaluator")
+def calibrate_evaluator(
+    repetitions: int = typer.Option(3, min=2, max=20, help="Replays per labeled case."),
+    alpha: float = typer.Option(
+        product_domains.DEFAULT_PROMOTION_ALPHA,
+        min=0.0001,
+        max=0.5,
+        help="Target sign-test and majority-error budget.",
+    ),
+    json_out: Path = typer.Option(None, help="Optional path for the calibration report."),
+) -> None:
+    """Replay the validity corpus to estimate flakes and trial defaults."""
+    report = asyncio.run(
+        evaluation_calibration.run_calibration(repetitions=repetitions, alpha=alpha)
+    )
+    table = Table(title=f"Evaluator calibration · {report.actor}")
+    for column in ("case", "domain", "mismatches", "flake rate"):
+        table.add_column(column)
+    for case in report.cases:
+        table.add_row(
+            case.id,
+            case.domain,
+            f"{case.mismatches}/{len(case.outcomes)}",
+            f"{case.flake_rate:.1%}",
+        )
+    console.print(table)
+    console.print(
+        f"accuracy={report.accuracy:.1%} max_flake={report.max_flake_rate:.1%} "
+        f"recommended_trials={report.recommended_trials} alpha={report.alpha:g}"
+    )
+    if json_out is not None:
+        report.write(json_out)
+        console.print(f"report={json_out}")
+    if report.mismatches:
+        raise typer.Exit(1)
+
+
 @app.command()
 def list_runs(
     runs_dir: Path = typer.Option(None, help="Runs directory containing the sqlite db."),
@@ -125,7 +182,16 @@ def list_runs(
         console.print("[yellow]No runs yet.[/yellow]")
         return
     table = Table(title="Runs")
-    for col in ("id", "brief", "model", "best_iter", "best_score", "holdout", "status"):
+    for col in (
+        "id",
+        "brief",
+        "model",
+        "best_iter",
+        "best_score",
+        "holdout",
+        "challenge",
+        "status",
+    ):
         table.add_column(col)
     for r in rows:
         table.add_row(
@@ -139,7 +205,38 @@ def list_runs(
                 if r.get("holdout_passed") is True
                 else ("fail" if r.get("holdout_passed") is False else "-")
             ),
+            r.get("challenge_outcome") or "-",
             r["status"],
+        )
+    console.print(table)
+
+
+@app.command("list-incumbents")
+def list_incumbents(
+    runs_dir: Path = typer.Option(None, help="Runs directory containing the sqlite db."),
+    all_entries: bool = typer.Option(False, "--all", help="Include superseded incumbents."),
+) -> None:
+    """List verified cross-run incumbents and their frozen contracts."""
+    _load_env()
+    runs_dir = runs_dir or _default_runs_dir()
+    rows = storage.Storage(runs_dir / "design-gan.sqlite").list_incumbents(
+        active_only=not all_entries
+    )
+    if not rows:
+        console.print("[yellow]No incumbents yet.[/yellow]")
+        return
+    table = Table(title="Product incumbents")
+    for column in ("id", "product", "domain", "contract", "run", "score", "active"):
+        table.add_column(column)
+    for row in rows:
+        table.add_row(
+            str(row["id"]),
+            row["optimization_key"],
+            row["domain"],
+            f"d{row['domain_version']}/e{row['evaluator_version']}/a{row['artifact_policy_version']}",
+            f"{row['run_id']}#{row['iter']}",
+            f"{row['holdout_score']:.1f}",
+            "yes" if row["active"] else "no",
         )
     console.print(table)
 
