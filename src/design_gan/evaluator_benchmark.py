@@ -105,6 +105,28 @@ class BenchmarkCase:
 
 
 @dataclass(frozen=True)
+class ReviewCandidate:
+    """One task outcome from immutable run history awaiting an operator label."""
+
+    run_id: int
+    iteration: int
+    task_id: str
+    task_name: str
+    task_instruction: str
+    domain: str
+    observed_pass: bool
+    passed_trials: int
+    total_trials: int
+    errors: tuple[str, ...]
+    artifact_sha256: str
+    suggested_case_id: str
+    captured_case_ids: tuple[str, ...] = ()
+
+    def to_dict(self) -> dict[str, Any]:
+        return asdict(self)
+
+
+@dataclass(frozen=True)
 class BenchmarkCaseResult:
     id: str
     domain: str
@@ -400,9 +422,11 @@ BENCHMARK_CASES: tuple[BenchmarkCase, ...] = (
 _CASE_ID = re.compile(r"^[a-z0-9][a-z0-9-]{2,79}$")
 
 
-def write_case_fixture(case: BenchmarkCase, path: Path) -> Path:
+def write_case_fixture(case: BenchmarkCase, path: Path, *, overwrite: bool = True) -> Path:
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(case.to_fixture(), indent=2), encoding="utf-8")
+    mode = "w" if overwrite else "x"
+    with path.open(mode, encoding="utf-8") as fixture:
+        fixture.write(json.dumps(case.to_fixture(), indent=2))
     return path
 
 
@@ -454,6 +478,95 @@ def load_case_directory(path: Path) -> tuple[BenchmarkCase, ...]:
     if len(ids) != len(set(ids)):
         raise ValueError("captured evaluator case ids must be unique")
     return cases
+
+
+def _suggested_case_id(run_id: int, iteration: int, task_id: str) -> str:
+    task_slug = re.sub(r"[^a-z0-9]+", "-", task_id.lower()).strip("-") or "task"
+    prefix = f"run-{run_id}-iter-{iteration}-"
+    return (prefix + task_slug)[:80].rstrip("-")
+
+
+def review_candidates(
+    store: storage.Storage,
+    *,
+    captured_cases: Iterable[BenchmarkCase] = (),
+    failed_only: bool = True,
+    limit: int = 100,
+) -> tuple[ReviewCandidate, ...]:
+    """Find concrete task outcomes suitable for operator validity review.
+
+    Results are newest-first and grouped by iteration/task. Repeated trials are
+    intentionally kept together: the operator labels whether the frozen task
+    *should* pass on the artifact, while ``observed_pass`` reports whether every
+    recorded evaluator attempt passed without a runtime error.
+    """
+    if limit < 1:
+        raise ValueError("limit must be positive")
+    captured: dict[tuple[int, int, str], list[str]] = {}
+    for case in captured_cases:
+        provenance = case.provenance
+        if provenance.get("source") != "design-gan-run":
+            continue
+        key = (
+            provenance.get("run_id"),
+            provenance.get("iteration"),
+            provenance.get("task_id"),
+        )
+        if isinstance(key[0], int) and isinstance(key[1], int) and isinstance(key[2], str):
+            captured.setdefault(key, []).append(case.id)
+
+    candidates: list[ReviewCandidate] = []
+    for run in store.list_runs():
+        if (run.get("kind") or "design") != "design":
+            continue
+        plan = run.get("evaluation_plan") or {}
+        frozen_tasks = plan.get("tasks") or run.get("evaluation_suite") or []
+        frozen_task_ids = {task.get("id") for task in frozen_tasks if isinstance(task, dict)}
+        if not frozen_task_ids:
+            continue
+        domain = run.get("domain") or plan.get("domain") or "custom"
+        for record in reversed(store.iterations_for_run(run["id"])):
+            if not artifact_policy.validate_html(record["html"]).passed:
+                continue
+            grouped: dict[str, list[dict[str, Any]]] = {}
+            for result in record.get("task_results") or []:
+                task_id = result.get("task_id")
+                if isinstance(task_id, str) and task_id in frozen_task_ids:
+                    grouped.setdefault(task_id, []).append(result)
+            for task_id, attempts in grouped.items():
+                errors = tuple(
+                    dict.fromkeys(
+                        str(error)
+                        for attempt in attempts
+                        for error in (attempt.get("errors") or [])
+                        if error
+                    )
+                )
+                passed_trials = sum(bool(attempt.get("passed")) for attempt in attempts)
+                observed_pass = passed_trials == len(attempts) and not errors
+                if failed_only and observed_pass:
+                    continue
+                key = (run["id"], record["iter"], task_id)
+                candidates.append(
+                    ReviewCandidate(
+                        run_id=run["id"],
+                        iteration=record["iter"],
+                        task_id=task_id,
+                        task_name=str(attempts[0].get("name") or task_id),
+                        task_instruction=str(attempts[0].get("instruction") or ""),
+                        domain=str(domain),
+                        observed_pass=observed_pass,
+                        passed_trials=passed_trials,
+                        total_trials=len(attempts),
+                        errors=errors,
+                        artifact_sha256=incumbent_ledger.artifact_hash(record["html"]),
+                        suggested_case_id=_suggested_case_id(run["id"], record["iter"], task_id),
+                        captured_case_ids=tuple(sorted(captured.get(key, ()))),
+                    )
+                )
+                if len(candidates) >= limit:
+                    return tuple(candidates)
+    return tuple(candidates)
 
 
 def capture_run_case(

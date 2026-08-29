@@ -20,6 +20,52 @@ def client(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> TestClient:
     return TestClient(viewer.app)
 
 
+def _seed_review_candidate() -> tuple[int, str]:
+    from design_gan import browser_evaluator, storage, viewer
+
+    task = browser_evaluator.BrowserTask(
+        id="landing-review-task",
+        name="Primary action",
+        instruction="Activate the primary action.",
+        behavior="primary-action",
+    )
+    run_id = viewer._store().create_run(
+        "Review this generated landing page",
+        "model",
+        domain="landing-page",
+        evaluation_suite=[task.to_dict()],
+        evaluation_plan={"domain": "landing-page", "tasks": [task.to_dict()]},
+    )
+    private_html = (
+        "<!doctype html><html><body><button>Private generated content</button></body></html>"
+    )
+    viewer._store().save_iteration(
+        storage.IterationRecord(
+            run_id=run_id,
+            iter=1,
+            html=private_html,
+            sus_score=50.0,
+            axe_penalty=0.0,
+            composite_score=0.0,
+            sus_answers=[3] * 10,
+            feedback="Primary action did not respond.",
+            suggestions=[],
+            artifacts_dir="",
+            task_results=[
+                {
+                    "task_id": task.id,
+                    "name": task.name,
+                    "instruction": task.instruction,
+                    "passed": False,
+                    "trial": 1,
+                    "errors": ["no response observed"],
+                }
+            ],
+        )
+    )
+    return run_id, private_html
+
+
 class TestIndex:
     def test_index_returns_html(self, client: TestClient):
         r = client.get("/")
@@ -119,6 +165,11 @@ class TestStatic:
         r = client.get("/static/scrub.js")
         assert r.status_code == 200
         assert "scrub-stage" in r.text
+
+    def test_serves_evaluator_review_js(self, client: TestClient):
+        r = client.get("/static/evaluator-review.js")
+        assert r.status_code == 200
+        assert "/api/evaluator-cases" in r.text
 
     def test_static_traversal_rejected(self, client: TestClient):
         # Path traversal via substring check.
@@ -393,6 +444,58 @@ class TestStartTokenGate:
         ]
         assert "Private generated content" not in response.text
 
+    def test_review_queue_exposes_metadata_and_page_without_html(self, gated_client: TestClient):
+        run_id, private_html = _seed_review_candidate()
+
+        response = gated_client.get("/api/evaluator-case-candidates")
+        page = gated_client.get("/evaluator-review")
+
+        assert response.status_code == 200
+        assert response.json()[0]["run_id"] == run_id
+        assert response.json()[0]["task_id"] == "landing-review-task"
+        assert response.json()[0]["observed_pass"] is False
+        assert response.json()[0]["site_url"] == f"/runs/{run_id}/iters/1/site"
+        assert private_html not in response.text
+        assert page.status_code == 200
+        assert "The evaluator's observed result is context, not the label." in page.text
+        assert "landing-review-task" in page.text
+        assert "/static/evaluator-review.js" in page.text
+        assert private_html not in page.text
+
+    def test_capture_api_requires_token_writes_fixture_and_rejects_duplicate(
+        self, gated_client: TestClient
+    ):
+        run_id, private_html = _seed_review_candidate()
+        payload = {
+            "run_id": run_id,
+            "iteration": 1,
+            "task_id": "landing-review-task",
+            "case_id": "reviewed-primary-failure",
+            "expected_pass": False,
+        }
+
+        assert gated_client.post("/api/evaluator-cases", json=payload).status_code == 401
+        response = gated_client.post(
+            "/api/evaluator-cases",
+            json=payload,
+            headers={"Authorization": "Bearer s3cret"},
+        )
+        duplicate = gated_client.post(
+            "/api/evaluator-cases",
+            json=payload,
+            headers={"Authorization": "Bearer s3cret"},
+        )
+
+        assert response.status_code == 201
+        assert response.json()["id"] == "reviewed-primary-failure"
+        assert response.json()["provenance"]["source"] == "design-gan-run"
+        assert private_html not in response.text
+        assert duplicate.status_code == 409
+        listed = gated_client.get("/api/evaluator-cases").json()
+        assert listed[0]["id"] == "reviewed-primary-failure"
+        candidates = gated_client.get("/api/evaluator-case-candidates").json()
+        assert candidates[0]["captured_case_ids"] == ["reviewed-primary-failure"]
+
     def test_bearer_header_accepted(
         self, gated_client: TestClient, monkeypatch: pytest.MonkeyPatch
     ):
@@ -481,7 +584,7 @@ class TestBudgetGate:
     def test_no_budget_means_no_check(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
         monkeypatch.setenv("DESIGN_GAN_RUNS_DIR", str(tmp_path))
         # budget env unset
-        from design_gan import viewer, orchestrator
+        from design_gan import orchestrator, viewer
 
         seed_demo(tmp_path)
         monkeypatch.setattr(orchestrator, "run_loop_sync", lambda *a, **kw: None)
@@ -517,6 +620,7 @@ class TestConversationRoutes:
     def convo_client(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> TestClient:
         monkeypatch.setenv("DESIGN_GAN_RUNS_DIR", str(tmp_path))
         import json as _json
+
         from design_gan import viewer
         from design_gan.storage import IterationRecord, Storage
 
