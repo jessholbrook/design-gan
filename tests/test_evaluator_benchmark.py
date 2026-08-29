@@ -12,6 +12,7 @@ from design_gan.evaluator_benchmark import (
     corpus_composition,
     load_case_directory,
     proportion_interval,
+    review_candidates,
     run_benchmark,
     write_case_fixture,
 )
@@ -145,6 +146,77 @@ def test_operator_labeled_run_case_roundtrips_with_provenance(tmp_path: Path):
     assert loaded[0].task.viewport == (390, 844)
     assert loaded[0].provenance["run_id"] == run_id
     assert len(loaded[0].provenance["artifact_sha256"]) == 64
+
+
+def test_review_candidates_group_trials_prioritize_failures_and_mark_captured(tmp_path: Path):
+    store = storage.Storage(tmp_path / "runs.sqlite")
+    task = browser_evaluator.BrowserTask(
+        "landing-primary",
+        "Primary action",
+        "Activate the primary action.",
+        behavior="primary-action",
+    )
+    run_id = store.create_run(
+        "Coffee landing page",
+        "model",
+        domain="landing-page",
+        evaluation_suite=[task.to_dict()],
+        evaluation_plan={"domain": "landing-page", "tasks": [task.to_dict()]},
+    )
+    html = "<!doctype html><html><body><button>Start</button></body></html>"
+    common = {
+        "run_id": run_id,
+        "html": html,
+        "sus_score": 50.0,
+        "axe_penalty": 0.0,
+        "composite_score": 50.0,
+        "sus_answers": [3] * 10,
+        "feedback": "review",
+        "suggestions": [],
+        "artifacts_dir": str(tmp_path),
+    }
+    store.save_iteration(
+        storage.IterationRecord(
+            iter=1,
+            task_results=[
+                {**task.to_dict(), "task_id": task.id, "passed": True, "trial": 1},
+                {
+                    **task.to_dict(),
+                    "task_id": task.id,
+                    "passed": False,
+                    "trial": 2,
+                    "errors": ["button did not respond"],
+                },
+            ],
+            **common,
+        )
+    )
+    store.save_iteration(
+        storage.IterationRecord(
+            iter=2,
+            task_results=[{**task.to_dict(), "task_id": task.id, "passed": True, "trial": 1}],
+            **common,
+        )
+    )
+    captured = capture_run_case(
+        store,
+        run_id=run_id,
+        iteration=1,
+        task_id=task.id,
+        case_id="operator-reviewed-failure",
+        expected_pass=False,
+    )
+
+    failures = review_candidates(store, captured_cases=(captured,))
+    all_outcomes = review_candidates(store, captured_cases=(captured,), failed_only=False)
+
+    assert len(failures) == 1
+    assert failures[0].observed_pass is False
+    assert (failures[0].passed_trials, failures[0].total_trials) == (1, 2)
+    assert failures[0].errors == ("button did not respond",)
+    assert failures[0].captured_case_ids == ("operator-reviewed-failure",)
+    assert failures[0].suggested_case_id == "run-1-iter-1-landing-primary"
+    assert [candidate.iteration for candidate in all_outcomes] == [2, 1]
 
 
 def test_captured_fixture_loader_reports_invalid_task_as_validation_error(tmp_path: Path):

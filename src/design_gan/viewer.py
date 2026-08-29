@@ -36,7 +36,7 @@ def _default_model() -> str:
 
 
 def _required_start_token() -> str | None:
-    """If set, POST /api/runs must present this token. Unset -> gate disabled."""
+    """Shared token for run starts and evaluator-label writes; unset disables the gate."""
     tok = os.environ.get("DESIGN_GAN_START_TOKEN")
     return tok if tok else None
 
@@ -117,6 +117,7 @@ def _layout(title: str, body: str, body_attrs: str = "") -> str:
   <header class="topbar">
     <a href="/" class="brand">design-gan</a>
     <span class="muted">Autoresearch dual-agent loop</span>
+    <nav class="topnav"><a href="/evaluator-review">Evaluator review</a></nav>
   </header>
   {body}
   <script src="/static/app.js"></script>
@@ -143,6 +144,24 @@ def _status_badge(status: str) -> str:
         "budget_exhausted": "errored",
     }.get(status, "unknown")
     return f'<span class="status status-{cls}">{html.escape(status)}</span>'
+
+
+def _evaluator_cases() -> tuple[evaluator_benchmark.BenchmarkCase, ...]:
+    try:
+        return evaluator_benchmark.load_case_directory(_runs_dir() / "evaluator-corpus")
+    except ValueError as exc:
+        raise HTTPException(500, f"invalid evaluator corpus: {exc}") from exc
+
+
+def _review_candidates(
+    *, failed_only: bool = True, limit: int = 100
+) -> tuple[evaluator_benchmark.ReviewCandidate, ...]:
+    return evaluator_benchmark.review_candidates(
+        _store(),
+        captured_cases=_evaluator_cases(),
+        failed_only=failed_only,
+        limit=limit,
+    )
 
 
 def _runs_sidebar(active_id: int | None) -> str:
@@ -349,6 +368,98 @@ def index() -> str:
   </section>
 </main>"""
     return _layout("design-gan", body)
+
+
+@app.get("/evaluator-review", response_class=HTMLResponse)
+def evaluator_review(failed_only: bool = True) -> str:
+    candidates = _review_candidates(failed_only=failed_only)
+    cards = []
+    for candidate in candidates:
+        observed = "PASS" if candidate.observed_pass else "FAIL"
+        observed_class = "review-pass" if candidate.observed_pass else "review-fail"
+        errors = (
+            "<ul>"
+            + "".join(f"<li>{html.escape(error)}</li>" for error in candidate.errors)
+            + "</ul>"
+            if candidate.errors
+            else '<p class="muted">No runtime errors recorded.</p>'
+        )
+        captured = ""
+        actions = f"""
+          <label>Stable case id
+            <input name="case_id" value="{html.escape(candidate.suggested_case_id)}"
+              pattern="[a-z0-9][a-z0-9-]{{2,79}}" required />
+          </label>
+          <div class="review-actions">
+            <button type="button" data-label="pass">Label should pass</button>
+            <button type="button" data-label="fail" class="secondary">Label should fail</button>
+          </div>"""
+        if candidate.captured_case_ids:
+            case_ids = ", ".join(candidate.captured_case_ids)
+            captured = (
+                '<p class="review-captured">Already captured: '
+                f"<code>{html.escape(case_ids)}</code></p>"
+            )
+            actions = '<p class="muted">This exact run, iteration, and task is already labeled.</p>'
+        task_id_attr = html.escape(candidate.task_id)
+        site_url = f"/runs/{candidate.run_id}/iters/{candidate.iteration}/site"
+        screenshot_url = f"/runs/{candidate.run_id}/iters/{candidate.iteration}/screenshot"
+        cards.append(
+            f"""<article class="review-card" data-run-id="{candidate.run_id}"
+              data-iteration="{candidate.iteration}" data-task-id="{task_id_attr}">
+              <a class="review-preview" href="{site_url}" target="_blank" rel="noopener">
+                <img src="{screenshot_url}"
+                  loading="lazy" alt="Run {candidate.run_id} iteration {candidate.iteration}" />
+                <span>Inspect artifact in sandbox →</span>
+              </a>
+              <div class="review-detail">
+                <div class="review-meta">run #{candidate.run_id} · iter {candidate.iteration} ·
+                  {html.escape(candidate.domain)} · {task_id_attr}</div>
+                <h2>{html.escape(candidate.task_name)}</h2>
+                <p>{html.escape(candidate.task_instruction)}</p>
+                <p>Evaluator observed <b class="{observed_class}">{observed}</b> ·
+                  {candidate.passed_trials}/{candidate.total_trials} trials passed</p>
+                {errors}
+                <p class="muted">artifact <code>{candidate.artifact_sha256[:12]}</code></p>
+                {captured}
+                <form class="review-form">{actions}
+                  <p class="review-status" aria-live="polite"></p></form>
+              </div>
+            </article>"""
+        )
+    empty = (
+        '<section class="card"><p>No review candidates match this filter. Run a v2 design '
+        "evaluation first, or include successful outcomes.</p></section>"
+        if not cards
+        else ""
+    )
+    token_field = (
+        '<label class="review-token">Write token '
+        '<input id="review-token" type="password" autocomplete="off" '
+        'placeholder="Required to save labels" /></label>'
+        if _required_start_token()
+        else ""
+    )
+    filter_link = (
+        '<a href="/evaluator-review?failed_only=false">Include successful outcomes</a>'
+        if failed_only
+        else '<a href="/evaluator-review">Show failures only</a>'
+    )
+    body = f"""<main class="review-page">
+      <header class="review-head">
+        <div><h1>Evaluator review</h1>
+          <p>Inspect the stored artifact, then label whether the frozen task should pass.
+          The evaluator's observed result is context, not the label.</p></div>
+        <div>{filter_link}</div>
+      </header>
+      <section class="review-controls">{token_field}
+        <p class="muted">Labels are stored locally with full artifact provenance and are
+        automatically included by benchmark and calibration commands using this corpus.</p>
+      </section>
+      {empty}{"".join(cards)}
+      <script src="/static/evaluator-review.js"></script>
+    </main>"""
+    return _layout("design-gan · evaluator review", body)
 
 
 @app.get("/runs/{run_id}", response_class=HTMLResponse)
@@ -616,11 +727,6 @@ def api_incumbents() -> JSONResponse:
 @app.get("/api/evaluator-cases")
 def api_evaluator_cases() -> JSONResponse:
     """List operator-labeled cases without exposing their generated HTML."""
-    case_dir = _runs_dir() / "evaluator-corpus"
-    try:
-        cases = evaluator_benchmark.load_case_directory(case_dir)
-    except ValueError as exc:
-        raise HTTPException(500, f"invalid evaluator corpus: {exc}") from exc
     return JSONResponse(
         [
             {
@@ -630,7 +736,26 @@ def api_evaluator_cases() -> JSONResponse:
                 "expected_pass": case.expected_pass,
                 "provenance": case.provenance,
             }
-            for case in cases
+            for case in _evaluator_cases()
+        ]
+    )
+
+
+@app.get("/api/evaluator-case-candidates")
+def api_evaluator_case_candidates(failed_only: bool = True, limit: int = 100) -> JSONResponse:
+    """List run/task outcomes for review without exposing stored HTML."""
+    if not 1 <= limit <= 500:
+        raise HTTPException(422, "limit must be between 1 and 500")
+    return JSONResponse(
+        [
+            {
+                **candidate.to_dict(),
+                "site_url": (f"/runs/{candidate.run_id}/iters/{candidate.iteration}/site"),
+                "screenshot_url": (
+                    f"/runs/{candidate.run_id}/iters/{candidate.iteration}/screenshot"
+                ),
+            }
+            for candidate in _review_candidates(failed_only=failed_only, limit=limit)
         ]
     )
 
@@ -656,16 +781,62 @@ class StartRunRequest(BaseModel):
     optimization_key: str | None = Field(default=None, min_length=1, max_length=160)
 
 
-def _check_start_token(req: StartRunRequest, authorization: str | None) -> None:
-    """Enforce DESIGN_GAN_START_TOKEN if set. Accept body.token or `Authorization: Bearer`."""
+class CaptureEvaluatorCaseRequest(BaseModel):
+    run_id: int = Field(ge=1)
+    iteration: int = Field(ge=1)
+    task_id: str = Field(min_length=1, max_length=160)
+    case_id: str = Field(pattern=r"^[a-z0-9][a-z0-9-]{2,79}$")
+    expected_pass: bool
+    token: str | None = None
+
+
+def _check_write_token(token: str | None, authorization: str | None) -> None:
+    """Enforce the shared mutation token when configured."""
     required = _required_start_token()
     if not required:
         return
-    provided = req.token
+    provided = token
     if not provided and authorization and authorization.lower().startswith("bearer "):
         provided = authorization.split(" ", 1)[1].strip()
     if not provided or not hmac.compare_digest(provided, required):
         raise HTTPException(status_code=401, detail="invalid or missing token")
+
+
+@app.post("/api/evaluator-cases", status_code=201)
+def capture_evaluator_case(
+    req: CaptureEvaluatorCaseRequest,
+    authorization: str | None = Header(default=None),
+) -> JSONResponse:
+    """Persist an operator label for one immutable run/task artifact."""
+    _check_write_token(req.token, authorization)
+    try:
+        case = evaluator_benchmark.capture_run_case(
+            _store(),
+            run_id=req.run_id,
+            iteration=req.iteration,
+            task_id=req.task_id,
+            case_id=req.case_id,
+            expected_pass=req.expected_pass,
+        )
+        evaluator_benchmark.write_case_fixture(
+            case,
+            _runs_dir() / "evaluator-corpus" / f"{case.id}.json",
+            overwrite=False,
+        )
+    except FileExistsError as exc:
+        raise HTTPException(409, f"evaluator case already exists: {req.case_id}") from exc
+    except ValueError as exc:
+        raise HTTPException(422, str(exc)) from exc
+    return JSONResponse(
+        {
+            "id": case.id,
+            "domain": case.domain,
+            "task_id": case.task.id,
+            "expected_pass": case.expected_pass,
+            "provenance": case.provenance,
+        },
+        status_code=201,
+    )
 
 
 @app.get("/api/config")
@@ -695,7 +866,7 @@ def api_config() -> JSONResponse:
 async def start_run(
     req: StartRunRequest, authorization: str | None = Header(default=None)
 ) -> JSONResponse:
-    _check_start_token(req, authorization)
+    _check_write_token(req.token, authorization)
 
     # Reject up-front when the daily budget is already spent. The orchestrator
     # re-checks between iterations, so a single run starting with headroom

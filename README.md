@@ -67,7 +67,8 @@ critic ──► SUS + feedback (diagnostic) ───────────�
   protection for concurrent incumbent challenges.
 - **`viewer.py`** — FastAPI viewer to browse iterations, plus a scrubber
   (`/runs/{id}/scrub`) for stepping through the evolution with a before/after
-  compare slider.
+  compare slider and an evaluator review queue (`/evaluator-review`) for
+  operator-labeling stored run/task outcomes.
 
 ## Setup
 
@@ -82,6 +83,8 @@ cp .env.example .env  # add your ANTHROPIC_API_KEY
 ```bash
 # Launch the web UI: kick off runs, watch them live, browse history
 design-gan viewer  # http://127.0.0.1:8000
+# Review generated failures and save provenance-backed labels in the browser:
+# http://127.0.0.1:8000/evaluator-review
 
 # Or run one evolution loop from the terminal
 design-gan run "A landing page for a weekend cycling tour in rural Vermont."
@@ -106,6 +109,14 @@ The viewer renders a dashboard with a run-start form, a live score chart, and
 per-iteration cards (screenshot, task score, promotion gates, diagnostic SUS,
 feedback, and suggestions). If you start a run from the browser it streams new iterations in via SSE as
 they complete — you can literally watch the site evolve.
+
+The **Evaluator review** page prioritizes failed task outcomes from stored v2
+design runs. An operator opens the exact artifact in its existing sandbox,
+decides whether the frozen task should pass, and saves that label into the local
+`runs/evaluator-corpus` directory. The JSON queue exposes task evidence,
+artifact hashes, and provenance but never generated HTML. Label writes reuse
+`DESIGN_GAN_START_TOKEN` when that deployment gate is configured; reading run
+history remains open.
 
 ![Run page — score over iterations and per-iteration cards.](docs/images/run-page.png)
 
@@ -240,5 +251,6 @@ cases, and a concrete evaluator implementation.
 
 The completed concrete roadmap is in [`docs/roadmap.md`](docs/roadmap.md).
 Remaining research is evidence collection: accumulate reviewed cases from real
-generated runs and admit a model-driven actor only if it beats the semantic
-baseline within explicit cost, latency, and repeatability budgets.
+generated runs using the review queue, then admit a model-driven actor only if
+it beats the semantic baseline within explicit cost, latency, and repeatability
+budgets.

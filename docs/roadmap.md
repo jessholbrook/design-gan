@@ -169,11 +169,28 @@ All criteria above are met by `codex/product-optimization-roadmap`.
    - `--confidence` changes the descriptive interval level without changing the
      frozen evaluator, corpus labels, promotion alpha, or trial recommendation.
 
+## Operator review workflow — complete
+
+1. **Run-history review queue**
+   - `/evaluator-review` groups repeated trial outcomes by run, iteration, and
+     frozen task, prioritizing evaluator failures while allowing successful
+     outcomes to be included for balanced review.
+   - Each item links to the existing sandboxed artifact, shows observed trials
+     and runtime errors, and marks outcomes already captured in the local
+     corpus. The run viewer and scrubber remain unchanged.
+2. **Authenticated provenance capture**
+   - `POST /api/evaluator-cases` reuses the optional viewer write token and
+     requires an explicit operator pass/fail label plus a stable case id.
+   - Captured fixtures contain the exact stored artifact, frozen task, artifact
+     hash, and run provenance. The read APIs and page never expose artifact HTML.
+   - Exclusive fixture creation returns a conflict rather than silently
+     replacing an existing label.
+
 ## Next research decisions
 
-- Use the capture path to accumulate reviewed pass and failure examples from
-  actual generated runs; the repository intentionally does not fabricate or
-  check in a private run fixture merely to claim real-run coverage.
+- Use the review queue during actual design runs to accumulate pass and failure
+  examples; the repository intentionally does not fabricate or check in a
+  private run fixture merely to claim real-run coverage.
 - Reconsider a model actor only if it beats semantic-v4 on the expanded,
   provenance-backed corpus within explicit cost, latency, and repeatability
   budgets.
