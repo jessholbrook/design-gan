@@ -136,6 +136,35 @@ BENCHMARK_CASES: tuple[BenchmarkCase, ...] = (
         False,
     ),
     BenchmarkCase(
+        "landing-cookie-control-only",
+        "landing-page",
+        _task("landing-cookie-control-only", "primary-action"),
+        """<html><body><div id="cookie"><p>Cookies</p>
+        <button onclick="document.querySelector('#cookie').remove()">Accept</button>
+        </div><main><h1>Product</h1></main></body></html>""",
+        False,
+    ),
+    BenchmarkCase(
+        "landing-primary-among-cookie-controls",
+        "landing-page",
+        _task("landing-primary-among-cookie-controls", "primary-action"),
+        """<html><body><div id="cookie"><button
+        onclick="document.querySelector('#cookie').remove()">Accept</button></div>
+        <main><button class="hero-cta"
+        onclick="document.querySelector('output').textContent='Booking started'">Book tour</button>
+        <output></output></main></body></html>""",
+        True,
+    ),
+    BenchmarkCase(
+        "landing-action-runtime-error",
+        "landing-page",
+        _task("landing-action-runtime-error", "primary-action"),
+        """<html><body><button data-primary-action
+        onclick="document.querySelector('output').textContent='Started';throw new Error('broken')">
+        Start</button><output></output></body></html>""",
+        False,
+    ),
+    BenchmarkCase(
         "lead-marked-form",
         "lead-generation",
         _task("lead-marked-form", "form-completion"),
@@ -182,6 +211,26 @@ BENCHMARK_CASES: tuple[BenchmarkCase, ...] = (
         False,
     ),
     BenchmarkCase(
+        "lead-spinner-without-success",
+        "lead-generation",
+        _task("lead-spinner-without-success", "form-completion"),
+        """<html><body><form data-primary-action onsubmit="event.preventDefault();
+        this.querySelector('button').textContent='Sending…'">
+        <label>Email<input type="email" required></label>
+        <button type="submit">Request demo</button></form></body></html>""",
+        False,
+    ),
+    BenchmarkCase(
+        "lead-explicit-received-state",
+        "lead-generation",
+        _task("lead-explicit-received-state", "form-completion"),
+        """<html><body><form data-primary-action onsubmit="event.preventDefault();
+        document.querySelector('[role=status]').textContent='Request received'">
+        <label>Email<input type="email" required></label>
+        <button type="submit">Request demo</button></form><p role="status"></p></body></html>""",
+        True,
+    ),
+    BenchmarkCase(
         "storefront-cart-state",
         "storefront",
         _task("storefront-cart-state", "cart-addition"),
@@ -208,13 +257,22 @@ BENCHMARK_CASES: tuple[BenchmarkCase, ...] = (
         <output></output></body></html>""",
         False,
     ),
+    BenchmarkCase(
+        "storefront-preexisting-cart-count",
+        "storefront",
+        _task("storefront-preexisting-cart-count", "cart-addition"),
+        """<html><body><p>Cart (1)</p><button data-primary-action
+        onclick="document.querySelector('output').textContent='Please wait'">Add to cart</button>
+        <output></output></body></html>""",
+        False,
+    ),
 )
 
 
 async def run_benchmark(
     cases: Iterable[BenchmarkCase] = BENCHMARK_CASES,
     *,
-    actor: str = "semantic-v3",
+    actor: str = "semantic-v4",
     evaluator: Evaluator = browser_evaluator.evaluate,
 ) -> BenchmarkReport:
     results: list[BenchmarkCaseResult] = []
@@ -234,4 +292,4 @@ async def run_benchmark(
                 errors=tuple(evaluation.correctness_errors),
             )
         )
-    return BenchmarkReport(corpus_version=2, actor=actor, results=tuple(results))
+    return BenchmarkReport(corpus_version=3, actor=actor, results=tuple(results))

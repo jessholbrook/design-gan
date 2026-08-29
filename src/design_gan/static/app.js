@@ -60,8 +60,9 @@
       body.max_conversation_turns = Number(fd.get('max_conversation_turns')) || 5;
     } else {
       body.design_domain = fd.get('design_domain') || 'landing-page';
-      body.evaluation_trials = Number(fd.get('evaluation_trials')) || 6;
+      body.evaluation_trials = Number(fd.get('evaluation_trials')) || 5;
       body.promotion_alpha = Number(fd.get('promotion_alpha')) || 0.05;
+      body.optimization_key = fd.get('optimization_key') || null;
     }
     const token = fd.get('token');
     if (token) {

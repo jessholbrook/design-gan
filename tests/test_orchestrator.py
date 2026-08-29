@@ -194,7 +194,7 @@ class TestConvergence:
         cfg.promotion_alpha = 0.05
         FakeRun(
             scores=[[3] * 10, [3] * 10],
-            task_scores=[0.0, 66.67],
+            task_scores=[0.0, 80.0],
         ).install(monkeypatch)
 
         result = orchestrator.run_loop_sync(cfg)
@@ -206,7 +206,7 @@ class TestConvergence:
         assert saved[1]["promotion_wins"] == 4
         assert saved[1]["promotion_p_value"] == pytest.approx(0.0625)
 
-    def test_default_significance_promotes_six_paired_wins(
+    def test_default_significance_promotes_five_paired_wins(
         self, cfg: orchestrator.LoopConfig, monkeypatch: pytest.MonkeyPatch
     ):
         cfg.max_iters = 2
@@ -222,8 +222,8 @@ class TestConvergence:
         assert result.best_iter == 2
         assert saved[1]["promoted"] is True
         assert saved[1]["promotion_reason"] == "significant_improvement"
-        assert saved[1]["promotion_wins"] == 6
-        assert saved[1]["promotion_p_value"] == pytest.approx(0.015625)
+        assert saved[1]["promotion_wins"] == 5
+        assert saved[1]["promotion_p_value"] == pytest.approx(0.03125)
 
     def test_final_promoted_candidate_receives_one_untouched_holdout_audit(
         self, cfg: orchestrator.LoopConfig, monkeypatch: pytest.MonkeyPatch
@@ -241,6 +241,9 @@ class TestConvergence:
         assert result.holdout_score == 100.0
         assert run["holdout_passed"] is True
         assert run["holdout_results"]["audited_iter"] == 1
+        assert result.challenge_outcome == "established"
+        assert run["challenge_outcome"] == "established"
+        assert run["incumbent_id"] is not None
         assert (cfg.runs_dir / "run_0001" / "holdout_evaluation.json").is_file()
 
     def test_holdout_failure_does_not_reenter_the_search_loop(
@@ -277,6 +280,65 @@ class TestConvergence:
         assert result.best_score == 100.0
         assert result.holdout_passed is False
         assert len(fake.generated_requests) == 1
+
+    def test_new_run_challenges_incumbent_only_after_independent_search(
+        self, cfg: orchestrator.LoopConfig, monkeypatch: pytest.MonkeyPatch
+    ):
+        cfg.max_iters = 1
+        cfg.patience = 1
+        cfg.optimization_key = "product:test"
+
+        async def evaluation(html, *, tasks, viewport=(1280, 800), trials_per_task=1):
+            attempts = []
+            for task in tasks:
+                for trial in range(1, trials_per_task + 1):
+                    passed = not (
+                        task.split == "holdout"
+                        and "incumbent" in html
+                        and phase[0] == 2
+                    )
+                    attempts.append(
+                        browser_evaluator.TaskResult(
+                            task_id=task.id,
+                            name=task.name,
+                            instruction=task.instruction,
+                            passed=passed,
+                            target="target",
+                            trial=trial,
+                            split=task.split,
+                        )
+                    )
+            return browser_evaluator.EvaluationResult(
+                score=100 * sum(item.passed for item in attempts) / len(attempts),
+                tasks=attempts,
+            )
+
+        phase = [1]
+        first = FakeRun(
+            scores=[[3] * 10],
+            task_scores=[100.0],
+            htmls=["<!doctype html><html><body>incumbent</body></html>"],
+        )
+        first.install(monkeypatch)
+        monkeypatch.setattr(orchestrator.browser_evaluator, "evaluate", evaluation)
+        first_result = orchestrator.run_loop_sync(cfg)
+        assert first_result.challenge_outcome == "established"
+
+        phase[0] = 2
+        second = FakeRun(
+            scores=[[3] * 10],
+            task_scores=[100.0],
+            htmls=["<!doctype html><html><body>challenger</body></html>"],
+        )
+        second.install(monkeypatch)
+        monkeypatch.setattr(orchestrator.browser_evaluator, "evaluate", evaluation)
+        second_result = orchestrator.run_loop_sync(cfg)
+
+        assert second.generated_requests[0].prior_html is None
+        assert second_result.challenge_outcome == "replaced"
+        active = storage.Storage(cfg.db_path).list_incumbents(active_only=True)
+        assert len(active) == 1
+        assert active[0]["run_id"] == second_result.run_id
 
     def test_converges_when_scores_plateau(
         self, cfg: orchestrator.LoopConfig, monkeypatch: pytest.MonkeyPatch
@@ -384,7 +446,7 @@ class TestArtifacts:
         orchestrator.run_loop_sync(cfg)
         store = storage.Storage(cfg.db_path)
         iters = store.iterations_for_run(1)
-        assert "Behavioral task completion: 6/6" in iters[0]["feedback"]
+        assert "Behavioral task completion: 5/5" in iters[0]["feedback"]
         assert "great job" in iters[0]["feedback"]
         assert iters[0]["suggestions"] == ["ship it"]
 

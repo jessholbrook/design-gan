@@ -16,7 +16,7 @@ from fastapi import FastAPI, Header, HTTPException
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, StreamingResponse
 from pydantic import BaseModel, Field
 
-from . import artifact_policy, critic, orchestrator, product_domains, storage
+from . import artifact_policy, critic, incumbent_ledger, orchestrator, product_domains, storage
 
 
 def _runs_dir() -> Path:
@@ -201,12 +201,16 @@ def _new_run_form() -> str:
         </select>
       </label>
       <label>Trials per task
-        <input type="number" name="evaluation_trials" value="6" min="1" max="50" />
+        <input type="number" name="evaluation_trials" value="{product_domains.DEFAULT_EVALUATION_TRIALS}" min="1" max="50" />
       </label>
       <label>Promotion alpha
         <input type="number" name="promotion_alpha" value="0.05" step="0.01" min="0.0001" max="1" />
       </label>
     </div>
+    <label data-design-only>Optimization key (optional)
+      <input type="text" name="optimization_key" maxlength="160"
+        placeholder="Shared key for runs optimizing the same product" />
+    </label>
     <label data-conversation-only hidden>Max conversation turns
       <input type="number" name="max_conversation_turns" value="5" min="1" max="10" />
     </label>
@@ -364,7 +368,8 @@ def run_detail(run_id: int) -> str:
         plan_meta = (
             f'<p class="muted">domain {html.escape(run.get("domain") or "legacy")} · '
             f"{plan.get('trials_per_task', 1)} trial(s)/task · "
-            f"promotion α={plan.get('promotion_alpha', 'legacy')}</p>"
+            f"promotion α={plan.get('promotion_alpha', 'legacy')} · product "
+            f"<code>{html.escape(run.get('optimization_key') or 'legacy')}</code></p>"
         )
         policy = run.get("artifact_policy") or {}
         policy_meta = (
@@ -384,6 +389,16 @@ def run_detail(run_id: int) -> str:
         holdout_html = (
             '<p class="run-holdout"><b>Final untouched holdout: '
             f"{'PASS' if holdout_passed else 'FAIL'}</b>{holdout_score_text}</p>"
+        )
+    challenge_html = ""
+    if kind == "design" and run.get("challenge_outcome"):
+        outcome = str(run["challenge_outcome"]).replace("_", " ")
+        incumbent_id = run.get("incumbent_id")
+        incumbent_text = f" · incumbent {incumbent_id}" if incumbent_id is not None else ""
+        challenge_html = (
+            '<p class="run-challenge"><b>Cross-run challenge: '
+            f"{html.escape(outcome)}</b>{incumbent_text} · product "
+            f"<code>{html.escape(run.get('optimization_key') or 'unscoped')}</code></p>"
         )
     cards = "".join(_iter_card_html(run_id, it, kind=kind) for it in iters)
 
@@ -431,6 +446,7 @@ def run_detail(run_id: int) -> str:
       <p class="brief">{html.escape(run["brief"])}</p>
       {suite_html}
       {holdout_html}
+      {challenge_html}
       {error_html}
       <div class="chart-wrap">
         <svg id="score-chart" viewBox="0 0 800 220" preserveAspectRatio="none"></svg>
@@ -582,6 +598,11 @@ def api_run(run_id: int) -> JSONResponse:
     return JSONResponse({"run": run, "iterations": _store().iterations_for_run(run_id)})
 
 
+@app.get("/api/incumbents")
+def api_incumbents() -> JSONResponse:
+    return JSONResponse(_store().list_incumbents(active_only=True))
+
+
 # ---------- Routes: start + stream ----------
 
 
@@ -598,8 +619,13 @@ class StartRunRequest(BaseModel):
         default="landing-page",
         pattern="^(landing-page|lead-generation|storefront)$",
     )
-    evaluation_trials: int = Field(default=6, ge=1, le=50)
-    promotion_alpha: float = Field(default=0.05, gt=0.0, le=1.0)
+    evaluation_trials: int = Field(
+        default=product_domains.DEFAULT_EVALUATION_TRIALS, ge=1, le=50
+    )
+    promotion_alpha: float = Field(
+        default=product_domains.DEFAULT_PROMOTION_ALPHA, gt=0.0, le=1.0
+    )
+    optimization_key: str | None = Field(default=None, min_length=1, max_length=160)
 
 
 def _check_start_token(req: StartRunRequest, authorization: str | None) -> None:
@@ -685,6 +711,7 @@ async def start_run(
         design_domain=req.design_domain,
         evaluation_trials=req.evaluation_trials,
         promotion_alpha=req.promotion_alpha,
+        optimization_key=req.optimization_key,
     )
     # Pre-create the run so we can return its id immediately.
     plan = (
@@ -698,6 +725,11 @@ async def start_run(
         else None
     )
     suite = [task.to_dict() for task in plan.tasks] if plan else None
+    ledger_key = (
+        incumbent_ledger.optimization_key(req.brief, req.optimization_key)
+        if plan is not None
+        else None
+    )
     run_id = _store().create_run(
         req.brief,
         model,
@@ -708,6 +740,7 @@ async def start_run(
             artifact_policy.DEFAULT_ARTIFACT_POLICY.to_dict() if req.kind == "design" else None
         ),
         domain=plan.domain if plan else None,
+        optimization_key=ledger_key,
     )
     entry = (
         orchestrator.run_conversation_loop_sync

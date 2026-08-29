@@ -32,6 +32,10 @@ CREATE TABLE IF NOT EXISTS runs (
     evaluation_suite TEXT,        -- frozen JSON browser scenarios for design runs
     evaluation_plan TEXT,         -- versioned frozen evaluator + promotion policy
     artifact_policy TEXT,         -- versioned mutable-artifact boundary
+    optimization_key TEXT,        -- explicit or brief-derived cross-run product scope
+    incumbent_id INTEGER,
+    challenge_outcome TEXT,
+    challenge_results TEXT,
     holdout_score REAL,
     holdout_passed INTEGER,
     holdout_results TEXT,
@@ -73,6 +77,43 @@ CREATE TABLE IF NOT EXISTS iterations (
 
 CREATE INDEX IF NOT EXISTS iterations_run ON iterations(run_id);
 CREATE INDEX IF NOT EXISTS iterations_created ON iterations(created_at);
+
+CREATE TABLE IF NOT EXISTS incumbents (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    optimization_key TEXT NOT NULL,
+    domain TEXT NOT NULL,
+    domain_version INTEGER NOT NULL,
+    evaluator_version INTEGER NOT NULL,
+    artifact_policy_version INTEGER NOT NULL,
+    run_id INTEGER NOT NULL REFERENCES runs(id),
+    iter INTEGER NOT NULL,
+    artifact_hash TEXT NOT NULL,
+    html TEXT NOT NULL,
+    primary_score REAL NOT NULL,
+    holdout_score REAL NOT NULL,
+    holdout_results TEXT NOT NULL,
+    created_at REAL NOT NULL,
+    active INTEGER NOT NULL DEFAULT 1,
+    supersedes_id INTEGER REFERENCES incumbents(id)
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS incumbents_active_contract
+ON incumbents(
+    optimization_key, domain, domain_version, evaluator_version, artifact_policy_version
+) WHERE active = 1;
+
+CREATE TABLE IF NOT EXISTS incumbent_challenges (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    challenger_run_id INTEGER NOT NULL UNIQUE REFERENCES runs(id),
+    prior_incumbent_id INTEGER REFERENCES incumbents(id),
+    resulting_incumbent_id INTEGER REFERENCES incumbents(id),
+    outcome TEXT NOT NULL,
+    evidence TEXT NOT NULL,
+    created_at REAL NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS incumbent_challenges_created
+ON incumbent_challenges(created_at);
 """
 
 
@@ -129,6 +170,10 @@ class Storage:
             ("evaluation_suite", "TEXT"),
             ("evaluation_plan", "TEXT"),
             ("artifact_policy", "TEXT"),
+            ("optimization_key", "TEXT"),
+            ("incumbent_id", "INTEGER"),
+            ("challenge_outcome", "TEXT"),
+            ("challenge_results", "TEXT"),
             ("holdout_score", "REAL"),
             ("holdout_passed", "INTEGER"),
             ("holdout_results", "TEXT"),
@@ -212,6 +257,7 @@ class Storage:
         evaluation_plan: dict[str, Any] | None = None,
         artifact_policy: dict[str, Any] | None = None,
         domain: str | None = None,
+        optimization_key: str | None = None,
     ) -> int:
         suite_json = json.dumps(evaluation_suite) if evaluation_suite is not None else None
         plan_json = json.dumps(evaluation_plan) if evaluation_plan is not None else None
@@ -219,8 +265,19 @@ class Storage:
         with self._conn() as c:
             cur = c.execute(
                 "INSERT INTO runs(brief, model, kind, created_at, domain, evaluation_suite, "
-                "evaluation_plan, artifact_policy) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-                (brief, model, kind, time.time(), domain, suite_json, plan_json, policy_json),
+                "evaluation_plan, artifact_policy, optimization_key) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (
+                    brief,
+                    model,
+                    kind,
+                    time.time(),
+                    domain,
+                    suite_json,
+                    plan_json,
+                    policy_json,
+                    optimization_key,
+                ),
             )
             return cur.lastrowid
 
@@ -254,6 +311,13 @@ class Storage:
                 (current_iter, current_phase, time.time(), run_id),
             )
 
+    def set_run_optimization_key(self, run_id: int, optimization_key: str) -> None:
+        with self._conn() as c:
+            c.execute(
+                "UPDATE runs SET optimization_key=? WHERE id=?",
+                (optimization_key, run_id),
+            )
+
     def save_holdout_audit(
         self,
         run_id: int,
@@ -268,6 +332,143 @@ class Storage:
                 "holdout_evaluated_at=? WHERE id=?",
                 (score, int(passed), json.dumps(results), time.time(), run_id),
             )
+
+    def get_active_incumbent(
+        self,
+        *,
+        optimization_key: str,
+        domain: str,
+        domain_version: int,
+        evaluator_version: int,
+        artifact_policy_version: int,
+    ) -> dict[str, Any] | None:
+        with self._conn() as c:
+            row = c.execute(
+                "SELECT * FROM incumbents WHERE optimization_key=? AND domain=? "
+                "AND domain_version=? AND evaluator_version=? "
+                "AND artifact_policy_version=? AND active=1",
+                (
+                    optimization_key,
+                    domain,
+                    domain_version,
+                    evaluator_version,
+                    artifact_policy_version,
+                ),
+            ).fetchone()
+            return self._decode_incumbent(dict(row)) if row else None
+
+    def resolve_incumbent_challenge(
+        self,
+        *,
+        run_id: int,
+        contract: dict[str, Any],
+        prior_incumbent_id: int | None,
+        outcome: str,
+        evidence: dict[str, Any],
+        candidate_iter: int,
+        candidate_html: str,
+        candidate_artifact_hash: str,
+        candidate_primary_score: float,
+        candidate_holdout_score: float,
+        candidate_holdout_results: dict[str, Any],
+    ) -> int | None:
+        """Atomically record a challenge and install its candidate when selected."""
+        if outcome not in {
+            "established",
+            "replaced",
+            "retained",
+            "rejected_holdout",
+            "inconclusive",
+        }:
+            raise ValueError(f"unsupported challenge outcome: {outcome}")
+        with self._conn() as c:
+            existing = c.execute(
+                "SELECT resulting_incumbent_id FROM incumbent_challenges "
+                "WHERE challenger_run_id=?",
+                (run_id,),
+            ).fetchone()
+            if existing:
+                return existing["resulting_incumbent_id"]
+
+            resulting_incumbent_id = prior_incumbent_id
+            if outcome in {"established", "replaced"}:
+                if outcome == "replaced":
+                    if prior_incumbent_id is None:
+                        raise ValueError("replaced challenge requires a prior incumbent")
+                    c.execute(
+                        "UPDATE incumbents SET active=0 WHERE id=? AND active=1",
+                        (prior_incumbent_id,),
+                    )
+                cur = c.execute(
+                    "INSERT INTO incumbents(optimization_key, domain, domain_version, "
+                    "evaluator_version, artifact_policy_version, run_id, iter, "
+                    "artifact_hash, html, primary_score, holdout_score, holdout_results, "
+                    "created_at, active, supersedes_id) "
+                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?)",
+                    (
+                        contract["optimization_key"],
+                        contract["domain"],
+                        contract["domain_version"],
+                        contract["evaluator_version"],
+                        contract["artifact_policy_version"],
+                        run_id,
+                        candidate_iter,
+                        candidate_artifact_hash,
+                        candidate_html,
+                        candidate_primary_score,
+                        candidate_holdout_score,
+                        json.dumps(candidate_holdout_results),
+                        time.time(),
+                        prior_incumbent_id,
+                    ),
+                )
+                resulting_incumbent_id = cur.lastrowid
+
+            c.execute(
+                "INSERT INTO incumbent_challenges(challenger_run_id, prior_incumbent_id, "
+                "resulting_incumbent_id, outcome, evidence, created_at) "
+                "VALUES (?, ?, ?, ?, ?, ?)",
+                (
+                    run_id,
+                    prior_incumbent_id,
+                    resulting_incumbent_id,
+                    outcome,
+                    json.dumps(evidence),
+                    time.time(),
+                ),
+            )
+            c.execute(
+                "UPDATE runs SET incumbent_id=?, challenge_outcome=?, challenge_results=? "
+                "WHERE id=?",
+                (
+                    resulting_incumbent_id,
+                    outcome,
+                    json.dumps(evidence),
+                    run_id,
+                ),
+            )
+            return resulting_incumbent_id
+
+    def list_incumbents(
+        self, *, active_only: bool = False, include_html: bool = False
+    ) -> list[dict[str, Any]]:
+        query = "SELECT * FROM incumbents"
+        if active_only:
+            query += " WHERE active=1"
+        query += " ORDER BY created_at DESC"
+        with self._conn() as c:
+            rows = c.execute(query).fetchall()
+            items = [self._decode_incumbent(dict(row)) for row in rows]
+            if not include_html:
+                for item in items:
+                    item.pop("html", None)
+            return items
+
+    @staticmethod
+    def _decode_incumbent(item: dict[str, Any]) -> dict[str, Any]:
+        item["holdout_results"] = json.loads(item["holdout_results"])
+        item["active"] = bool(item["active"])
+        return item
 
     def save_iteration(self, rec: IterationRecord) -> None:
         breakdown_json = (
@@ -345,6 +546,7 @@ class Storage:
             "evaluation_suite",
             "evaluation_plan",
             "artifact_policy",
+            "challenge_results",
             "holdout_results",
         ):
             if run.get(key):
