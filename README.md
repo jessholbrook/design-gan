@@ -21,6 +21,9 @@ critic ──► SUS + feedback (diagnostic) ───────────�
           promoted parent ◄─ paired significance + hard guardrails
                  │                                      │
                  └──────── sqlite + runs/ + viewer/scrubber
+                                                        │ final holdout only
+                                                        ▼
+                                            cross-run incumbent ledger
 ```
 
 - **`generator.py`** — Claude writes a standalone HTML/CSS/JS document.
@@ -36,6 +39,12 @@ critic ──► SUS + feedback (diagnostic) ───────────�
   one untouched holdout scenario against the final promoted artifact.
 - **`evaluator_benchmark.py`** — runs a labeled Chromium validity corpus without
   connecting experimental actors to the optimization loop.
+- **`evaluation_calibration.py`** — repeats the labeled corpus, measures observed
+  mismatches/flakes, and derives the smallest odd trial count that satisfies
+  both majority stability and the exact sign-test threshold.
+- **`incumbent_ledger.py`** — scopes cross-run competition to one product key and
+  frozen domain/evaluator/artifact contract. It adjudicates challenges only on
+  final holdout evidence; incumbent artifacts or feedback never seed search.
 - **`critic.py`** — Claude scores the screenshot on the 10-item SUS (Likert 1-5)
   and returns prioritized suggestions. SUS is feedback, not the design
   north-star. The response contract is a fenced JSON block validated against a
@@ -76,9 +85,11 @@ design-gan run "A landing page for a weekend cycling tour in rural Vermont."
 design-gan run "Collect demo requests for a B2B analytics product." \
   --domain lead-generation --evaluation-trials 8 --promotion-alpha 0.05
 design-gan run "A single-product storefront for a lightweight travel mug." \
-  --domain storefront
+  --domain storefront --optimization-key travel-mug
 design-gan benchmark-evaluator
+design-gan calibrate-evaluator --repetitions 3
 design-gan list-runs
+design-gan list-incumbents
 
 # Write the best iteration's HTML (or system prompt, for conversation runs) to a file
 design-gan export 3 --out best.html
@@ -153,7 +164,7 @@ pip install -e ".[dev]"
 pytest
 ```
 
-250 tests covering the browser-evaluator and artifact contracts, primary
+263 tests covering the browser-evaluator and artifact contracts, primary
 scoring, paired promotion decisions, storage (schema + migration), the extractor
 helpers, the orchestrator loop (with generator/critic/renderer faked), the
 viewer's HTTP endpoints (including the scrubber route), and the CLI.
@@ -180,9 +191,20 @@ viewer's HTTP endpoints (including the scrubber route), and the CLI.
 - **Untouched final holdout.** Development scenarios drive the adaptive loop.
   The holdout is not included in generator feedback and runs once against the
   final promoted artifact; it is an audit, not another tuning signal.
-- **Actor admission is evidence-based.** The recorded semantic-v3 baseline is
-  13/13 on labeled corpus v2. A model-driven actor is not used because it cannot
-  currently demonstrate better validity and would add cost and variance.
+- **Actor admission is evidence-based.** The recorded semantic-v4 baseline is
+  19/19 on labeled corpus v3. Its three-replay calibration is 57/57 with 0%
+  observed flakes. This is evidence for the current default, not proof of a zero
+  population flake rate. A model-driven actor remains outside the loop until it
+  demonstrates better validity within cost and repeatability budgets.
+- **Calibrated repeated trials.** At α=0.05, five all-win discordant pairs are
+  the smallest exact sign test that clears the threshold (p=0.03125). With no
+  flakes observed in the recorded corpus, the default is therefore five trials,
+  while the calibration command raises the recommendation when flakes appear.
+- **Cross-run incumbent challenges.** An explicit optimization key groups runs
+  for the same product; without one, a stable normalized-brief key is used.
+  The final candidate and current incumbent are freshly evaluated on the same
+  holdout. Only a fully passing, significantly better challenger replaces the
+  incumbent; ties and inconclusive audits preserve it.
 - **Convergence.** "No further improvements" is operationalized as
   `patience` iterations without an eligible primary-score gain of at least
   `tolerance` points.
@@ -204,6 +226,6 @@ New behavior requires a versioned product-domain profile, labeled benchmark
 cases, and a concrete evaluator implementation.
 
 The completed concrete roadmap is in [`docs/roadmap.md`](docs/roadmap.md).
-Remaining evaluator work is empirical calibration: expand the corpus with real
-generation failures, estimate flake rates, tune trial/significance defaults,
-and add a cross-run incumbent ledger.
+Remaining research is data collection and saturation resistance: ingest labeled
+failures from real generated runs, grow each domain beyond one holdout scenario,
+and calibrate again on a larger sample before widening the mutable artifact.

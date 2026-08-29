@@ -86,12 +86,43 @@ All criteria above are met by `codex/product-optimization-roadmap`.
      add-to-cart completion with visible cart evidence.
    - Generic visual change does not count as cart completion.
 
+## Calibration and cross-run follow-on — complete
+
+1. **Expanded evaluator validity corpus**
+   - Corpus v3 adds generation-shaped failure classes: cookie controls mistaken
+     for primary actions, action runtime errors, form spinners without success,
+     explicit form receipt states, and pre-existing cart counts.
+   - Semantic-v4 fixes those false positives and records 19/19 labeled cases in
+     `docs/evaluator-benchmark-semantic-v4.json`.
+   - These cases are regression seeds, not a claim that the corpus represents
+     the frequency of failures in production-generated artifacts.
+2. **Empirical calibration**
+   - Three isolated replays per case produced 57/57 correct outcomes and 0%
+     observed flakes. The machine-readable result is
+     `docs/evaluator-calibration-semantic-v4.json`.
+   - At α=0.05, an all-win exact sign test first clears the threshold with five
+     discordant pairs (p=0.03125). The default is now five trials, not six.
+   - `design-gan calibrate-evaluator` recomputes mismatch/flake rates and raises
+     the recommended odd trial count when majority-error risk exceeds alpha.
+3. **Cross-run incumbent ledger**
+   - Every design run receives an explicit product optimization key or a stable
+     normalized-brief key. Incumbents are separated by that key plus frozen
+     domain, evaluator, and artifact-policy versions.
+   - Search remains independent. Only after search ends are the final candidate
+     and current incumbent freshly replayed on the same untouched holdout.
+   - A fully passing challenger replaces the incumbent only when paired holdout
+     outcomes clear minimum effect and significance. Ties, failures, and
+     inconclusive audits retain the existing incumbent.
+   - SQLite preserves incumbent lineage and challenge evidence. The CLI, API,
+     run viewer, and scrubber expose the result without removing history.
+
 ## Next research decisions
 
-- Grow the labeled benchmark with failures observed in real generated runs;
-  reconsider a model actor only if it beats the semantic baseline on a future
-  corpus while meeting cost and repeatability budgets.
-- Calibrate trial count and significance thresholds from empirical flake rates
-  rather than treating six trials as permanently optimal.
-- Add a cross-run incumbent/holdout ledger so a new run can challenge a
-  previously verified artifact without reusing its development feedback.
+- Collect and label a larger corpus from actual generated runs; use confidence
+  intervals as well as observed rates before claiming a stable flake bound.
+- Add multiple sequestered holdout scenarios per domain to reduce metric
+  saturation while keeping enough development feedback for search.
+- Define concurrent-challenge arbitration if multiple runs for the same product
+  key finish together; the current ledger assumes one final writer per product.
+- Reconsider a model actor only if it beats semantic-v4 on the expanded corpus
+  within explicit cost, latency, and repeatability budgets.
