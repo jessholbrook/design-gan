@@ -46,7 +46,7 @@ class EvaluationPlan:
 LANDING_PAGE = ProductDomain(
     id="landing-page",
     name="Landing page",
-    version=2,
+    version=3,
     tasks=(
         BrowserTask(
             id="landing-primary-desktop",
@@ -81,13 +81,25 @@ LANDING_PAGE = ProductDomain(
             split="holdout",
             viewport=(390, 844),
         ),
+        BrowserTask(
+            id="landing-primary-mobile-keyboard-holdout",
+            name="Primary action remains keyboard-usable on mobile",
+            instruction=(
+                "At a compact mobile viewport, focus and activate the primary call to "
+                "action from the keyboard and observe a meaningful response."
+            ),
+            behavior="primary-action",
+            split="holdout",
+            viewport=(390, 844),
+            interaction="keyboard",
+        ),
     ),
 )
 
 LEAD_GENERATION = ProductDomain(
     id="lead-generation",
     name="Lead-generation form",
-    version=2,
+    version=3,
     tasks=(
         BrowserTask(
             id="lead-form-desktop",
@@ -121,13 +133,25 @@ LEAD_GENERATION = ProductDomain(
             viewport=(1280, 800),
             interaction="keyboard",
         ),
+        BrowserTask(
+            id="lead-form-mobile-keyboard-holdout",
+            name="Lead form can be submitted from the keyboard on mobile",
+            instruction=(
+                "At a compact mobile viewport, complete the primary lead form and submit "
+                "it from the keyboard, then observe an offline success response."
+            ),
+            behavior="form-completion",
+            split="holdout",
+            viewport=(390, 844),
+            interaction="keyboard",
+        ),
     ),
 )
 
 STOREFRONT = ProductDomain(
     id="storefront",
     name="Single-product storefront",
-    version=1,
+    version=2,
     tasks=(
         BrowserTask(
             id="storefront-cart-desktop",
@@ -159,6 +183,18 @@ STOREFRONT = ProductDomain(
             behavior="cart-addition",
             split="holdout",
             viewport=(1280, 800),
+            interaction="keyboard",
+        ),
+        BrowserTask(
+            id="storefront-cart-mobile-keyboard-holdout",
+            name="The cart action works from the keyboard on mobile",
+            instruction=(
+                "At a compact mobile viewport, activate the primary add-to-cart action "
+                "from the keyboard and observe a cart or bag containing at least one item."
+            ),
+            behavior="cart-addition",
+            split="holdout",
+            viewport=(390, 844),
             interaction="keyboard",
         ),
     ),

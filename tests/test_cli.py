@@ -17,6 +17,7 @@ def test_help_shows_commands():
         "run",
         "benchmark-evaluator",
         "calibrate-evaluator",
+        "capture-evaluator-case",
         "list-incumbents",
         "list-runs",
         "demo",
@@ -51,6 +52,27 @@ def test_list_incumbents_empty(tmp_path: Path):
     r = CliRunner().invoke(app, ["list-incumbents", "--runs-dir", str(tmp_path)])
     assert r.exit_code == 0
     assert "No incumbents" in r.output
+
+
+def test_capture_evaluator_case_rejects_unknown_label(tmp_path: Path):
+    r = CliRunner().invoke(
+        app,
+        [
+            "capture-evaluator-case",
+            "1",
+            "1",
+            "--task-id",
+            "task",
+            "--case-id",
+            "captured-case",
+            "--label",
+            "maybe",
+            "--runs-dir",
+            str(tmp_path),
+        ],
+    )
+    assert r.exit_code == 2
+    assert "pass or fail" in r.output
 
 
 def test_demo_seeds_and_then_list_runs_shows_it(tmp_path: Path):

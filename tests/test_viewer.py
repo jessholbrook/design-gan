@@ -189,9 +189,9 @@ class TestJsonApi:
             "storefront",
         }
         assert {domain["id"]: domain["version"] for domain in domains} == {
-            "landing-page": 2,
-            "lead-generation": 2,
-            "storefront": 1,
+            "landing-page": 3,
+            "lead-generation": 3,
+            "storefront": 2,
         }
 
     def test_api_unknown_run_is_404(self, client: TestClient):
@@ -246,10 +246,12 @@ class TestStartRunValidation:
             "lead-form-desktop",
             "lead-form-mobile",
             "lead-form-keyboard-holdout",
+            "lead-form-mobile-keyboard-holdout",
         ]
         assert [task["split"] for task in tasks] == [
             "development",
             "development",
+            "holdout",
             "holdout",
         ]
         assert run["evaluation_plan"]["trials_per_task"] == 8
@@ -302,6 +304,7 @@ class TestStartTokenGate:
             "landing-primary-desktop",
             "landing-primary-keyboard",
             "landing-primary-mobile-holdout",
+            "landing-primary-mobile-keyboard-holdout",
         ]
         assert run["evaluation_plan"]["trials_per_task"] == 5
         assert run["evaluation_plan"]["promotion_alpha"] == pytest.approx(0.05)
@@ -333,7 +336,10 @@ class TestStartTokenGate:
             contract=contract,
             prior_incumbent_id=None,
             outcome="established",
-            evidence={"decision": {"outcome": "established"}},
+            evidence={
+                "decision": {"outcome": "established"},
+                "arbitration_conflicts": [{"attempt": 1}],
+            },
             candidate_iter=1,
             candidate_html="<html>demo</html>",
             candidate_artifact_hash="hash",
@@ -346,10 +352,46 @@ class TestStartTokenGate:
         assert "Final untouched holdout: FAIL" in detail.text
         assert "Final untouched holdout" in scrub_js.text
         assert "Cross-run challenge: established" in detail.text
+        assert "concurrent retries 1" in detail.text
         assert "Cross-run challenge" in scrub_js.text
         incumbents = gated_client.get("/api/incumbents").json()
         assert incumbents[0]["optimization_key"] == "product:demo"
         assert "html" not in incumbents[0]
+
+    def test_evaluator_case_api_omits_captured_html(self, gated_client: TestClient):
+        from design_gan import browser_evaluator, evaluator_benchmark, viewer
+
+        case = evaluator_benchmark.BenchmarkCase(
+            id="captured-demo-case",
+            domain="landing-page",
+            task=browser_evaluator.BrowserTask(
+                id="landing-primary-desktop",
+                name="Primary action",
+                instruction="Activate the primary action.",
+                behavior="primary-action",
+            ),
+            html="<html><body><button>Private generated content</button></body></html>",
+            expected_pass=False,
+            provenance={"source": "design-run", "run_id": 7, "iteration": 2},
+        )
+        evaluator_benchmark.write_case_fixture(
+            case,
+            viewer._runs_dir() / "evaluator-corpus" / "captured-demo-case.json",
+        )
+
+        response = gated_client.get("/api/evaluator-cases")
+
+        assert response.status_code == 200
+        assert response.json() == [
+            {
+                "id": "captured-demo-case",
+                "domain": "landing-page",
+                "task_id": "landing-primary-desktop",
+                "expected_pass": False,
+                "provenance": {"source": "design-run", "run_id": 7, "iteration": 2},
+            }
+        ]
+        assert "Private generated content" not in response.text
 
     def test_bearer_header_accepted(
         self, gated_client: TestClient, monkeypatch: pytest.MonkeyPatch

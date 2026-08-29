@@ -13,6 +13,15 @@ from typing import Any
 
 SECONDS_PER_DAY = 86_400
 
+
+class IncumbentConflict(RuntimeError):
+    """The active incumbent changed after a challenger evaluated it."""
+
+    def __init__(self, current_incumbent_id: int | None):
+        self.current_incumbent_id = current_incumbent_id
+        super().__init__(f"active incumbent changed to {current_incumbent_id}")
+
+
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS runs (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -382,13 +391,29 @@ class Storage:
         }:
             raise ValueError(f"unsupported challenge outcome: {outcome}")
         with self._conn() as c:
+            c.execute("BEGIN IMMEDIATE")
             existing = c.execute(
-                "SELECT resulting_incumbent_id FROM incumbent_challenges "
-                "WHERE challenger_run_id=?",
+                "SELECT resulting_incumbent_id FROM incumbent_challenges WHERE challenger_run_id=?",
                 (run_id,),
             ).fetchone()
             if existing:
                 return existing["resulting_incumbent_id"]
+
+            current = c.execute(
+                "SELECT id FROM incumbents WHERE optimization_key=? AND domain=? "
+                "AND domain_version=? AND evaluator_version=? "
+                "AND artifact_policy_version=? AND active=1",
+                (
+                    contract["optimization_key"],
+                    contract["domain"],
+                    contract["domain_version"],
+                    contract["evaluator_version"],
+                    contract["artifact_policy_version"],
+                ),
+            ).fetchone()
+            current_incumbent_id = current["id"] if current else None
+            if current_incumbent_id != prior_incumbent_id:
+                raise IncumbentConflict(current_incumbent_id)
 
             resulting_incumbent_id = prior_incumbent_id
             if outcome in {"established", "replaced"}:
@@ -463,6 +488,48 @@ class Storage:
                 for item in items:
                     item.pop("html", None)
             return items
+
+    def record_inconclusive_challenge(
+        self,
+        *,
+        run_id: int,
+        contract: dict[str, Any],
+        evidence: dict[str, Any],
+    ) -> int | None:
+        """Record a terminal non-mutating result after bounded CAS conflicts."""
+        with self._conn() as c:
+            c.execute("BEGIN IMMEDIATE")
+            existing = c.execute(
+                "SELECT resulting_incumbent_id FROM incumbent_challenges WHERE challenger_run_id=?",
+                (run_id,),
+            ).fetchone()
+            if existing:
+                return existing["resulting_incumbent_id"]
+            current = c.execute(
+                "SELECT id FROM incumbents WHERE optimization_key=? AND domain=? "
+                "AND domain_version=? AND evaluator_version=? "
+                "AND artifact_policy_version=? AND active=1",
+                (
+                    contract["optimization_key"],
+                    contract["domain"],
+                    contract["domain_version"],
+                    contract["evaluator_version"],
+                    contract["artifact_policy_version"],
+                ),
+            ).fetchone()
+            current_id = current["id"] if current else None
+            c.execute(
+                "INSERT INTO incumbent_challenges(challenger_run_id, prior_incumbent_id, "
+                "resulting_incumbent_id, outcome, evidence, created_at) "
+                "VALUES (?, ?, ?, 'inconclusive', ?, ?)",
+                (run_id, current_id, current_id, json.dumps(evidence), time.time()),
+            )
+            c.execute(
+                "UPDATE runs SET incumbent_id=?, challenge_outcome='inconclusive', "
+                "challenge_results=? WHERE id=?",
+                (current_id, json.dumps(evidence), run_id),
+            )
+            return current_id
 
     @staticmethod
     def _decode_incumbent(item: dict[str, Any]) -> dict[str, Any]:

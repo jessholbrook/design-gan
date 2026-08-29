@@ -16,7 +16,15 @@ from fastapi import FastAPI, Header, HTTPException
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, StreamingResponse
 from pydantic import BaseModel, Field
 
-from . import artifact_policy, critic, incumbent_ledger, orchestrator, product_domains, storage
+from . import (
+    artifact_policy,
+    critic,
+    evaluator_benchmark,
+    incumbent_ledger,
+    orchestrator,
+    product_domains,
+    storage,
+)
 
 
 def _runs_dir() -> Path:
@@ -395,9 +403,11 @@ def run_detail(run_id: int) -> str:
         outcome = str(run["challenge_outcome"]).replace("_", " ")
         incumbent_id = run.get("incumbent_id")
         incumbent_text = f" · incumbent {incumbent_id}" if incumbent_id is not None else ""
+        conflicts = (run.get("challenge_results") or {}).get("arbitration_conflicts", [])
+        retry_text = f" · concurrent retries {len(conflicts)}" if conflicts else ""
         challenge_html = (
             '<p class="run-challenge"><b>Cross-run challenge: '
-            f"{html.escape(outcome)}</b>{incumbent_text} · product "
+            f"{html.escape(outcome)}</b>{incumbent_text}{retry_text} · product "
             f"<code>{html.escape(run.get('optimization_key') or 'unscoped')}</code></p>"
         )
     cards = "".join(_iter_card_html(run_id, it, kind=kind) for it in iters)
@@ -603,6 +613,28 @@ def api_incumbents() -> JSONResponse:
     return JSONResponse(_store().list_incumbents(active_only=True))
 
 
+@app.get("/api/evaluator-cases")
+def api_evaluator_cases() -> JSONResponse:
+    """List operator-labeled cases without exposing their generated HTML."""
+    case_dir = _runs_dir() / "evaluator-corpus"
+    try:
+        cases = evaluator_benchmark.load_case_directory(case_dir)
+    except ValueError as exc:
+        raise HTTPException(500, f"invalid evaluator corpus: {exc}") from exc
+    return JSONResponse(
+        [
+            {
+                "id": case.id,
+                "domain": case.domain,
+                "task_id": case.task.id,
+                "expected_pass": case.expected_pass,
+                "provenance": case.provenance,
+            }
+            for case in cases
+        ]
+    )
+
+
 # ---------- Routes: start + stream ----------
 
 
@@ -619,12 +651,8 @@ class StartRunRequest(BaseModel):
         default="landing-page",
         pattern="^(landing-page|lead-generation|storefront)$",
     )
-    evaluation_trials: int = Field(
-        default=product_domains.DEFAULT_EVALUATION_TRIALS, ge=1, le=50
-    )
-    promotion_alpha: float = Field(
-        default=product_domains.DEFAULT_PROMOTION_ALPHA, gt=0.0, le=1.0
-    )
+    evaluation_trials: int = Field(default=product_domains.DEFAULT_EVALUATION_TRIALS, ge=1, le=50)
+    promotion_alpha: float = Field(default=product_domains.DEFAULT_PROMOTION_ALPHA, gt=0.0, le=1.0)
     optimization_key: str | None = Field(default=None, min_length=1, max_length=160)
 
 

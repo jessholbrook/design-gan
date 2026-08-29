@@ -601,70 +601,119 @@ async def _run_shared_loop(
                 evaluator_version=design_plan.evaluator_version,
                 artifact_policy_version=cfg.artifact_policy.version,
             )
-            incumbent = store.get_active_incumbent(**contract.to_dict())
-            incumbent_holdout: browser_evaluator.EvaluationResult | None = None
-            incumbent_payload: dict[str, Any] | None = None
-            if incumbent is not None:
-                console.print(
-                    f"[dim]challenging incumbent {incumbent['id']} on the same holdout...[/dim]"
-                )
-                try:
-                    incumbent_holdout = await browser_evaluator.evaluate(
-                        incumbent["html"],
-                        tasks=design_plan.holdout_tasks,
-                        viewport=cfg.viewport,
-                        trials_per_task=design_plan.trials_per_task,
+            challenge_evidence: dict[str, Any] = {}
+            arbitration_conflicts: list[dict[str, int | None]] = []
+            # The incumbent can change while its holdout is being replayed. A
+            # bounded CAS retry ensures we never promote against stale evidence
+            # and never let contention create an unbounded evaluator loop.
+            for arbitration_attempt in range(1, 3):
+                incumbent = store.get_active_incumbent(**contract.to_dict())
+                incumbent_holdout: browser_evaluator.EvaluationResult | None = None
+                incumbent_payload: dict[str, Any] | None = None
+                if incumbent is not None:
+                    console.print(
+                        f"[dim]challenging incumbent {incumbent['id']} on the same holdout...[/dim]"
                     )
-                    incumbent_payload = incumbent_holdout.to_dict()
-                    incumbent_payload["incumbent_id"] = incumbent["id"]
-                    browser_evaluator.write_artifact(
-                        incumbent_holdout,
-                        run_dir,
-                        filename="incumbent_holdout_evaluation.json",
-                    )
-                except Exception as exc:  # noqa: BLE001 - preserve incumbent on audit failure
-                    incumbent_payload = {
-                        "incumbent_id": incumbent["id"],
-                        "error": f"{type(exc).__name__}: {exc}",
-                    }
+                    try:
+                        incumbent_holdout = await browser_evaluator.evaluate(
+                            incumbent["html"],
+                            tasks=design_plan.holdout_tasks,
+                            viewport=cfg.viewport,
+                            trials_per_task=design_plan.trials_per_task,
+                        )
+                        incumbent_payload = incumbent_holdout.to_dict()
+                        incumbent_payload["incumbent_id"] = incumbent["id"]
+                        browser_evaluator.write_artifact(
+                            incumbent_holdout,
+                            run_dir,
+                            filename="incumbent_holdout_evaluation.json",
+                        )
+                    except Exception as exc:  # noqa: BLE001 - preserve incumbent on failure
+                        incumbent_payload = {
+                            "incumbent_id": incumbent["id"],
+                            "error": f"{type(exc).__name__}: {exc}",
+                        }
 
-            if holdout is None:
-                challenge = incumbent_ledger.ChallengeDecision("rejected_holdout", None)
-            elif incumbent is not None and incumbent_holdout is None:
-                challenge = incumbent_ledger.ChallengeDecision("inconclusive", None)
-            else:
-                challenge = incumbent_ledger.decide_challenge(
-                    candidate=holdout,
-                    candidate_passed=bool(holdout_passed),
-                    incumbent=incumbent_holdout,
-                    minimum_effect=design_plan.minimum_effect,
-                    alpha=design_plan.promotion_alpha,
-                )
-            challenge_outcome = challenge.outcome
-            challenge_evidence = {
-                "contract": contract.to_dict(),
-                "candidate": dict(holdout_payload),
-                "prior_incumbent": incumbent_payload,
-                "decision": challenge.to_dict(),
-            }
-            try:
-                resulting_incumbent_id = store.resolve_incumbent_challenge(
-                    run_id=run_id,
-                    contract=contract.to_dict(),
-                    prior_incumbent_id=incumbent["id"] if incumbent else None,
-                    outcome=challenge.outcome,
-                    evidence=challenge_evidence,
-                    candidate_iter=best.iter or 0,
-                    candidate_html=best.artifact,
-                    candidate_artifact_hash=incumbent_ledger.artifact_hash(best.artifact),
-                    candidate_primary_score=best_score or 0.0,
-                    candidate_holdout_score=holdout_score or 0.0,
-                    candidate_holdout_results=holdout_payload,
-                )
-                challenge_evidence["resulting_incumbent_id"] = resulting_incumbent_id
-            except Exception as exc:  # noqa: BLE001 - holdout remains valid if ledger write fails
-                challenge_outcome = "inconclusive"
-                challenge_evidence["ledger_error"] = f"{type(exc).__name__}: {exc}"
+                if holdout is None:
+                    challenge = incumbent_ledger.ChallengeDecision("rejected_holdout", None)
+                elif incumbent is not None and incumbent_holdout is None:
+                    challenge = incumbent_ledger.ChallengeDecision("inconclusive", None)
+                else:
+                    challenge = incumbent_ledger.decide_challenge(
+                        candidate=holdout,
+                        candidate_passed=bool(holdout_passed),
+                        incumbent=incumbent_holdout,
+                        minimum_effect=design_plan.minimum_effect,
+                        alpha=design_plan.promotion_alpha,
+                    )
+                challenge_outcome = challenge.outcome
+                challenge_evidence = {
+                    "contract": contract.to_dict(),
+                    "candidate": dict(holdout_payload),
+                    "prior_incumbent": incumbent_payload,
+                    "decision": challenge.to_dict(),
+                    "arbitration_attempt": arbitration_attempt,
+                    "arbitration_conflicts": list(arbitration_conflicts),
+                }
+                observed_id = incumbent["id"] if incumbent else None
+                try:
+                    resulting_incumbent_id = store.resolve_incumbent_challenge(
+                        run_id=run_id,
+                        contract=contract.to_dict(),
+                        prior_incumbent_id=observed_id,
+                        outcome=challenge.outcome,
+                        evidence=challenge_evidence,
+                        candidate_iter=best.iter or 0,
+                        candidate_html=best.artifact,
+                        candidate_artifact_hash=incumbent_ledger.artifact_hash(best.artifact),
+                        candidate_primary_score=best_score or 0.0,
+                        candidate_holdout_score=holdout_score or 0.0,
+                        candidate_holdout_results=holdout_payload,
+                    )
+                    challenge_evidence["resulting_incumbent_id"] = resulting_incumbent_id
+                    break
+                except storage.IncumbentConflict as exc:
+                    arbitration_conflicts.append(
+                        {
+                            "attempt": arbitration_attempt,
+                            "observed_incumbent_id": observed_id,
+                            "current_incumbent_id": exc.current_incumbent_id,
+                        }
+                    )
+                    if arbitration_attempt == 1:
+                        console.print(
+                            "[dim]incumbent changed during arbitration; "
+                            "replaying the holdout once...[/dim]"
+                        )
+                        continue
+                    challenge_outcome = "inconclusive"
+                    challenge_evidence["decision"] = {
+                        "outcome": "inconclusive",
+                        "reason": "concurrent_incumbent_changes",
+                    }
+                    challenge_evidence["arbitration_conflicts"] = list(arbitration_conflicts)
+                    resulting_incumbent_id = store.record_inconclusive_challenge(
+                        run_id=run_id,
+                        contract=contract.to_dict(),
+                        evidence=challenge_evidence,
+                    )
+                    challenge_evidence["resulting_incumbent_id"] = resulting_incumbent_id
+                    break
+                except Exception as exc:  # noqa: BLE001 - holdout remains valid
+                    challenge_outcome = "inconclusive"
+                    challenge_evidence["ledger_error"] = f"{type(exc).__name__}: {exc}"
+                    try:
+                        resulting_incumbent_id = store.record_inconclusive_challenge(
+                            run_id=run_id,
+                            contract=contract.to_dict(),
+                            evidence=challenge_evidence,
+                        )
+                        challenge_evidence["resulting_incumbent_id"] = resulting_incumbent_id
+                    except Exception as record_exc:  # noqa: BLE001 - best-effort evidence
+                        challenge_evidence["record_error"] = (
+                            f"{type(record_exc).__name__}: {record_exc}"
+                        )
+                    break
             holdout_payload["ledger"] = challenge_evidence
             store.save_holdout_audit(
                 run_id,

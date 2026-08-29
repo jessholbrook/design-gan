@@ -15,7 +15,7 @@ def test_three_concrete_product_domains_are_registered():
     assert {task.split for task in lead.tasks} == {"development", "holdout"}
     storefront = get_domain("storefront")
     assert {task.behavior for task in storefront.tasks} == {"cart-addition"}
-    assert len(storefront.tasks) == 3
+    assert len(storefront.tasks) == 4
 
 
 def test_plan_freezes_versions_trials_and_promotion_policy():
@@ -27,12 +27,13 @@ def test_plan_freezes_versions_trials_and_promotion_policy():
     )
     payload = plan.to_dict()
     assert payload["domain"] == "lead-generation"
-    assert payload["domain_version"] == 2
+    assert payload["domain_version"] == 3
     assert payload["evaluator_version"] == 4
     assert payload["trials_per_task"] == 8
     assert len(plan.development_tasks) == 2
-    assert len(plan.holdout_tasks) == 1
-    assert plan.holdout_tasks[0].interaction == "keyboard"
+    assert len(plan.holdout_tasks) == 2
+    assert {task.viewport for task in plan.holdout_tasks} == {(1280, 800), (390, 844)}
+    assert {task.interaction for task in plan.holdout_tasks} == {"keyboard"}
 
 
 @pytest.mark.parametrize("domain", ["checkout", "", "conversation"])
