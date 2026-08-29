@@ -241,6 +241,8 @@ def capture_evaluator_case(
     task_id: str = typer.Option(..., help="Frozen task id to label."),
     case_id: str = typer.Option(..., help="Stable lowercase benchmark case id."),
     label: str = typer.Option(..., help="Operator label: pass or fail."),
+    reviewer: str = typer.Option(..., help="Stable operator id recorded with the label."),
+    rationale: str = typer.Option(..., help="Why the frozen task should pass or fail."),
     runs_dir: Path = typer.Option(None, help="Runs directory containing the sqlite db."),
     out: Path = typer.Option(None, help="Output fixture path."),
     overwrite: bool = typer.Option(False, help="Replace an existing fixture."),
@@ -258,6 +260,8 @@ def capture_evaluator_case(
             task_id=task_id,
             case_id=case_id,
             expected_pass=normalized_label == "pass",
+            reviewer=reviewer,
+            rationale=rationale,
         )
     except ValueError as exc:
         raise typer.BadParameter(str(exc)) from exc
@@ -269,6 +273,44 @@ def capture_evaluator_case(
     console.print(
         "[yellow]Fixture contains the full generated HTML; review it before sharing.[/yellow]"
     )
+
+
+@app.command("audit-evaluator-corpus")
+def audit_evaluator_corpus(
+    runs_dir: Path = typer.Option(None, help="Runs directory containing captured cases."),
+    case_dir: Path = typer.Option(None, help="Override the captured case directory."),
+    json_out: Path = typer.Option(None, help="Optional machine-readable readiness report."),
+) -> None:
+    """Check whether real-run evidence is ready for an actor comparison."""
+    runs_dir = runs_dir or _default_runs_dir()
+    case_dir = case_dir or runs_dir / "evaluator-corpus"
+    try:
+        report = evaluator_benchmark.audit_provenance_corpus(
+            evaluator_benchmark.load_case_directory(case_dir)
+        )
+    except ValueError as exc:
+        raise typer.BadParameter(str(exc), param_hint="--case-dir") from exc
+
+    status = "READY" if report.ready else "BLOCKED"
+    color = "green" if report.ready else "yellow"
+    console.print(
+        f"[{color}]{status}[/{color}] policy=v{report.policy_version} "
+        f"qualifying={report.qualifying_cases} excluded={len(report.excluded_cases)}"
+    )
+    for domain in evaluator_benchmark.ADMISSION_DOMAINS:
+        labels = report.by_domain_label[domain]
+        console.print(
+            f"{domain}: cases={report.by_domain.get(domain, 0)} "
+            f"pass={labels.get('pass', 0)} fail={labels.get('fail', 0)} "
+            f"runs={report.distinct_runs_by_domain[domain]}"
+        )
+    for blocker in report.blockers:
+        console.print(f"[yellow]- {blocker}[/yellow]")
+    if json_out is not None:
+        report.write(json_out)
+        console.print(f"report={json_out}")
+    if not report.ready:
+        raise typer.Exit(1)
 
 
 @app.command()

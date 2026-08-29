@@ -129,7 +129,7 @@ a:hover { text-decoration: underline; }
   color: var(--muted);
   font-size: 12px;
 }
-.review-token input, .review-form input {
+.review-token input, .review-form input, .review-form textarea {
   min-width: 260px;
   padding: 8px 10px;
   border: 1px solid var(--border);
@@ -137,6 +137,9 @@ a:hover { text-decoration: underline; }
   font: inherit;
   color: var(--text);
 }
+.review-form textarea { min-height: 88px; resize: vertical; }
+.corpus-readiness { margin-bottom: 18px; }
+.corpus-readiness ul { margin-bottom: 0; }
 .review-card {
   display: grid;
   grid-template-columns: minmax(280px, 42%) 1fr;
@@ -184,6 +187,7 @@ a:hover { text-decoration: underline; }
 .review-actions button:disabled { opacity: 0.55; cursor: default; }
 .review-status { min-height: 1.5em; margin: 8px 0 0; color: var(--muted); }
 .review-captured { color: var(--good); }
+.review-warning { color: var(--ok); }
 
 @media (max-width: 760px) {
   .review-head, .review-controls { flex-direction: column; align-items: stretch; }

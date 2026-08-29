@@ -2,12 +2,21 @@
 // run/iteration/task without exposing generated HTML through the JSON API.
 (() => {
   const TOKEN_KEY = 'design_gan_start_token';
+  const REVIEWER_KEY = 'design_gan_reviewer_id';
   const tokenInput = document.getElementById('review-token');
+  const reviewerInput = document.getElementById('reviewer-id');
   if (tokenInput) {
     tokenInput.value = localStorage.getItem(TOKEN_KEY) || '';
     tokenInput.addEventListener('change', () => {
       if (tokenInput.value) localStorage.setItem(TOKEN_KEY, tokenInput.value);
       else localStorage.removeItem(TOKEN_KEY);
+    });
+  }
+  if (reviewerInput) {
+    reviewerInput.value = localStorage.getItem(REVIEWER_KEY) || '';
+    reviewerInput.addEventListener('change', () => {
+      if (reviewerInput.value) localStorage.setItem(REVIEWER_KEY, reviewerInput.value);
+      else localStorage.removeItem(REVIEWER_KEY);
     });
   }
 
@@ -17,20 +26,31 @@
       const form = button.closest('.review-form');
       const status = form.querySelector('.review-status');
       const caseInput = form.querySelector('input[name="case_id"]');
+      const rationaleInput = form.querySelector('textarea[name="rationale"]');
       const buttons = form.querySelectorAll('button');
       const token = (tokenInput && tokenInput.value) || localStorage.getItem(TOKEN_KEY);
+      const reviewer = reviewerInput ? reviewerInput.value.trim() : '';
+      if (!form.reportValidity()) return;
+      if (reviewer.length < 2) {
+        status.textContent = 'error: enter a stable reviewer id';
+        reviewerInput.focus();
+        return;
+      }
       const payload = {
         run_id: Number(card.dataset.runId),
         iteration: Number(card.dataset.iteration),
         task_id: card.dataset.taskId,
         case_id: caseInput.value.trim(),
         expected_pass: button.dataset.label === 'pass',
+        reviewer,
+        rationale: rationaleInput.value.trim(),
       };
       const headers = { 'content-type': 'application/json' };
       if (token) {
         headers.Authorization = `Bearer ${token}`;
         localStorage.setItem(TOKEN_KEY, token);
       }
+      localStorage.setItem(REVIEWER_KEY, reviewer);
       buttons.forEach((item) => { item.disabled = true; });
       status.textContent = 'saving label…';
       try {

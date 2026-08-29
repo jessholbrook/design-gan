@@ -186,6 +186,25 @@ All criteria above are met by `codex/product-optimization-roadmap`.
    - Exclusive fixture creation returns a conflict rather than silently
      replacing an existing label.
 
+## Provenance corpus admission — complete
+
+1. **Auditable labels**
+   - New CLI and viewer captures require a stable reviewer id and a 10–2000
+     character rationale in addition to the pass/fail judgment.
+   - Review metadata round-trips in the local fixture but remains absent from
+     the open case-list API. Existing fixtures still load but do not qualify for
+     actor admission when the audit trail is missing.
+2. **Fail-closed readiness audit**
+   - Policy v1 requires 24 qualifying real-run cases, eight per existing domain,
+     three labels of each outcome per domain, and three distinct source runs per
+     domain. No run may contribute more than four qualifying cases.
+   - The audit excludes built-in cases, missing or mismatched provenance,
+     mismatched artifact hashes, duplicate run/iteration/task provenance, and
+     duplicate artifact/task evidence.
+   - `audit-evaluator-corpus`, `/api/evaluator-corpus-readiness`, and the review
+     page expose the same machine-readable blockers. A passing audit permits an
+     actor comparison but is not a production-representativeness claim.
+
 ## Next research decisions
 
 - Use the review queue during actual design runs to accumulate pass and failure
@@ -194,5 +213,7 @@ All criteria above are met by `codex/product-optimization-roadmap`.
 - Reconsider a model actor only if it beats semantic-v4 on the expanded,
   provenance-backed corpus within explicit cost, latency, and repeatability
   budgets.
+- Decide whether final actor adoption requires a second blinded reviewer and an
+  adjudication record; policy v1 records one accountable operator judgment.
 - Add another product domain only when it has a specific mutable artifact,
   frozen task contract, labeled failure cases, and a defensible north star.
