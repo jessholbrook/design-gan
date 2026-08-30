@@ -74,6 +74,10 @@ critic ──► SUS + feedback (diagnostic) ───────────�
 
 ## Setup
 
+Moving development to another machine? Start with the checked-in
+[`HANDOFF.md`](HANDOFF.md) for the verified resume point, deployed state, and
+remaining evaluator work.
+
 ```bash
 pip install -e .
 playwright install chromium
