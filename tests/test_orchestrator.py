@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from pathlib import Path
 from typing import Any
 
@@ -141,6 +142,23 @@ def cfg(tmp_path: Path) -> orchestrator.LoopConfig:
 
 
 class TestConvergence:
+    def test_generator_timeout_marks_run_errored(
+        self, cfg: orchestrator.LoopConfig, monkeypatch: pytest.MonkeyPatch
+    ):
+        async def hung_generator(*args, **kwargs):
+            await asyncio.Event().wait()
+
+        monkeypatch.setattr(orchestrator.generator, "generate", hung_generator)
+        cfg.max_iters = 1
+        cfg.patience = 1
+        cfg.model_timeout_seconds = 0.01
+
+        result = orchestrator.run_loop_sync(cfg)
+
+        assert result.status == "errored"
+        run = storage.Storage(cfg.db_path).get_run(result.run_id)
+        assert "generator timed out after 0.01s" in run["error"]
+
     def test_design_selection_uses_tasks_not_sus(
         self, cfg: orchestrator.LoopConfig, monkeypatch: pytest.MonkeyPatch
     ):

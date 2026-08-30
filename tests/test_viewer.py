@@ -130,6 +130,70 @@ class TestRunDetail:
         assert 'aria-valuenow="23"' in page
         assert 'id="progress-bar" style="width:23%"' in page
         assert 'class="progress-step is-active" data-phase="evaluating"' in page
+        assert 'data-phase-started-at="' in page
+        assert 'id="progress-elapsed"' in page
+
+    def test_design_evaluation_is_structured_instead_of_wall_of_text(self, client: TestClient):
+        from design_gan import storage, viewer
+
+        run_id = viewer._store().create_run("Structured evaluation", "model")
+        viewer._store().save_iteration(
+            storage.IterationRecord(
+                run_id=run_id,
+                iter=1,
+                html="<html><body><button>Go</button></body></html>",
+                sus_score=72.5,
+                axe_penalty=10.0,
+                composite_score=50.0,
+                sus_answers=[3] * 10,
+                feedback=(
+                    "Behavioral task completion: 1/2.\n"
+                    "Diagnostic SUS feedback (not the primary score): Clear hierarchy, "
+                    "but the action needs a stronger response."
+                ),
+                suggestions=["Make the action visibly update the page."],
+                artifacts_dir="",
+                primary_score=50.0,
+                primary_metric="task_completion_rate",
+                promotion_eligible=False,
+                promoted=False,
+                task_results=[
+                    {
+                        "task_id": "primary",
+                        "name": "Primary action works",
+                        "passed": True,
+                        "trial": 1,
+                    },
+                    {
+                        "task_id": "primary",
+                        "name": "Primary action works",
+                        "passed": False,
+                        "trial": 2,
+                        "observed": ["activation produced no observable response"],
+                    },
+                ],
+                guardrails={
+                    "accessibility": {
+                        "passed": False,
+                        "blocking_violations": [{"id": "color-contrast", "nodes": 4}],
+                    },
+                    "correctness": {"passed": True, "errors": []},
+                    "artifact_boundary": {"passed": True, "violations": []},
+                },
+            )
+        )
+
+        page = client.get(f"/runs/{run_id}").text
+
+        assert 'class="evaluation-metrics"' in page
+        assert "1/2" in page
+        assert "Primary action works" in page
+        assert "activation produced no observable response" in page
+        assert "color-contrast (4 node(s))" in page
+        assert "Runtime correctness" in page
+        assert "<summary>SUS diagnostic feedback</summary>" in page
+        assert "Clear hierarchy, but the action needs a stronger response." in page
+        assert "Behavioral task completion: 1/2." not in page
 
 
 class TestScrub:
@@ -220,6 +284,8 @@ class TestStatic:
         assert "progressBar.style.width" in r.text
         assert "Reconnecting to live progress" in r.text
         assert "Starting run" in r.text
+        assert "payload.card_html" in r.text
+        assert "Stage active for" in r.text
 
     def test_static_traversal_rejected(self, client: TestClient):
         # Path traversal via substring check.

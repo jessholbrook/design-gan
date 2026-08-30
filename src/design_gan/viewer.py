@@ -8,6 +8,7 @@ import html
 import json
 import logging
 import os
+import time
 from contextlib import asynccontextmanager
 from functools import lru_cache
 from pathlib import Path
@@ -190,7 +191,12 @@ def _progress_state(
 
 
 def _progress_html(
-    *, running: bool, current_iter: int | None, current_phase: str | None, max_iters: int | None
+    *,
+    running: bool,
+    current_iter: int | None,
+    current_phase: str | None,
+    current_phase_at: float | None,
+    max_iters: int | None,
 ) -> str:
     state = _progress_state(current_iter, current_phase, max_iters)
     steps = []
@@ -203,12 +209,18 @@ def _progress_html(
     max_iters_value = max_iters or 0
     percent = state["percent"]
     aria_text = f"{state['meta']}: {state['title']}"
-    return f"""<section id="progress-indicator" class="run-progress"
-        style="display:{display}" data-max-iters="{max_iters_value}" aria-live="polite">
+    phase_started_at = current_phase_at or 0
+    elapsed_seconds = max(0, int(time.time() - phase_started_at)) if phase_started_at else 0
+    elapsed_text = _duration_label(elapsed_seconds)
+    delayed_class = " is-delayed" if elapsed_seconds >= 120 else ""
+    return f"""<section id="progress-indicator" class="run-progress{delayed_class}"
+        style="display:{display}" data-max-iters="{max_iters_value}"
+        data-phase-started-at="{phase_started_at}" aria-live="polite">
       <div class="progress-summary">
         <span class="progress-activity" aria-hidden="true"><i></i><i></i><i></i></span>
         <span class="progress-copy"><strong id="progress-title">{state["title"]}</strong>
-          <span id="progress-text">{state["meta"]}</span></span>
+          <span id="progress-text">{state["meta"]}</span>
+          <span id="progress-elapsed" aria-hidden="true">{elapsed_text}</span></span>
         <b id="progress-percent">{percent}%</b>
       </div>
       <div id="progress-track" class="progress-track" role="progressbar"
@@ -218,6 +230,16 @@ def _progress_html(
       </div>
       <div id="progress-steps" class="progress-steps">{"".join(steps)}</div>
     </section>"""
+
+
+def _duration_label(seconds: int) -> str:
+    if seconds < 60:
+        return "Stage active for less than a minute"
+    minutes = seconds // 60
+    if minutes < 60:
+        return f"Stage active for {minutes}m"
+    hours, remaining_minutes = divmod(minutes, 60)
+    return f"Stage active for {hours}h {remaining_minutes}m"
 
 
 def _evaluator_cases() -> tuple[evaluator_benchmark.BenchmarkCase, ...]:
@@ -451,8 +473,135 @@ def _transcript_preview_html(run_id: int, it: int) -> str:
     return '<div class="transcript-preview">' + "".join(bubbles) + "</div>"
 
 
+def _task_evaluation_html(task_results: list[dict[str, Any]]) -> str:
+    groups: dict[str, dict[str, Any]] = {}
+    for result in task_results:
+        task_id = str(result.get("task_id") or result.get("name") or "task")
+        group = groups.setdefault(
+            task_id,
+            {
+                "name": result.get("name") or task_id,
+                "passed": 0,
+                "total": 0,
+                "failure": None,
+            },
+        )
+        group["total"] += 1
+        if result.get("passed"):
+            group["passed"] += 1
+        elif group["failure"] is None:
+            observations = result.get("observed") or []
+            errors = result.get("errors") or []
+            failures = [*observations, *errors]
+            group["failure"] = failures[0] if failures else "Task did not complete"
+
+    rows = []
+    for group in groups.values():
+        passed = group["passed"]
+        total = group["total"]
+        successful = total > 0 and passed == total
+        state = "passed" if successful else "failed"
+        pct = round(passed / total * 100) if total else 0
+        failure_html = (
+            ""
+            if successful or not group["failure"]
+            else f'<span class="task-failure">{html.escape(str(group["failure"]))}</span>'
+        )
+        rows.append(
+            f'<li class="task-result task-{state}">'
+            f'<div class="task-result-heading"><span class="task-state" aria-hidden="true"></span>'
+            f"<strong>{html.escape(str(group['name']))}</strong>"
+            f"<b>{passed}/{total} passed</b></div>"
+            f'<div class="task-meter" role="progressbar" aria-label="{html.escape(str(group["name"]))}" '
+            f'aria-valuemin="0" aria-valuemax="{total}" aria-valuenow="{passed}">'
+            f'<span style="width:{pct}%"></span></div>{failure_html}</li>'
+        )
+    return (
+        '<section class="evaluation-section"><h4>Behavioral tasks</h4>'
+        f'<ul class="task-results">{"".join(rows)}</ul></section>'
+    )
+
+
+def _guardrail_issue(name: str, gate: dict[str, Any]) -> str:
+    if name == "accessibility":
+        if gate.get("axe_error"):
+            return str(gate["axe_error"])
+        violations = gate.get("blocking_violations") or []
+        return ", ".join(
+            f"{item.get('id', 'violation')} ({item.get('nodes', 0)} node(s))" for item in violations
+        )
+    if name == "correctness":
+        return ", ".join(str(item) for item in (gate.get("errors") or []))
+    return ", ".join(str(item) for item in (gate.get("violations") or []))
+
+
+def _guardrail_html(guardrails: dict[str, Any]) -> str:
+    labels = {
+        "accessibility": "Accessibility",
+        "correctness": "Runtime correctness",
+        "artifact_boundary": "Artifact boundary",
+    }
+    rows = []
+    for name, label in labels.items():
+        gate = guardrails.get(name) or {}
+        passed = gate.get("passed") is True
+        state = "pass" if passed else "block"
+        issue = _guardrail_issue(name, gate)
+        detail = (
+            '<span class="guardrail-detail">No blocking issues</span>'
+            if passed
+            else f'<span class="guardrail-detail">{html.escape(issue or "Blocked")}</span>'
+        )
+        rows.append(
+            f'<li class="guardrail-{state}"><span class="guardrail-state">'
+            f"{'Pass' if passed else 'Blocked'}</span><strong>{label}</strong>{detail}</li>"
+        )
+    return (
+        '<section class="evaluation-section"><h4>Promotion guardrails</h4>'
+        f'<ul class="guardrail-results">{"".join(rows)}</ul></section>'
+    )
+
+
+def _diagnostic_feedback(feedback: str) -> str:
+    marker = "Diagnostic SUS feedback (not the primary score):"
+    if marker in feedback:
+        return feedback.split(marker, 1)[1].strip()
+    return feedback.strip()
+
+
+def _design_evaluation_html(it: dict[str, Any]) -> str:
+    task_results = it.get("task_results") or []
+    passed_trials = sum(1 for result in task_results if result.get("passed"))
+    total_trials = len(task_results)
+    gate_status = "Eligible" if it.get("promotion_eligible") else "Blocked"
+    decision = "Promoted" if it.get("promoted") else "Rejected"
+    diagnostic = _diagnostic_feedback(it.get("feedback") or "")
+    diagnostic_html = (
+        '<details class="evaluation-disclosure diagnostic-feedback">'
+        "<summary>SUS diagnostic feedback</summary>"
+        f"<p>{html.escape(diagnostic)}</p></details>"
+        if diagnostic
+        else ""
+    )
+    return f"""<div class="evaluation-metrics" aria-label="Iteration evaluation summary">
+      <span><small>Task score</small><strong>{(it.get("primary_score") or 0):.0f}%</strong></span>
+      <span><small>Trials</small><strong>{passed_trials}/{total_trials}</strong></span>
+      <span><small>SUS <em>diagnostic</em></small><strong>{it["sus_score"]:.0f}</strong></span>
+      <span class="metric-{gate_status.lower()}"><small>Guardrails</small><strong>{gate_status}</strong></span>
+      <span class="metric-{decision.lower()}"><small>Decision</small><strong>{decision}</strong></span>
+    </div>
+    <div class="evaluation-breakdown">
+      {_task_evaluation_html(task_results)}
+      {_guardrail_html(it.get("guardrails") or {})}
+    </div>
+    {diagnostic_html}"""
+
+
 def _iter_card_html(run_id: int, it: dict, kind: str = "design") -> str:
     suggestions = "".join(f"<li>{html.escape(s)}</li>" for s in (it.get("suggestions") or []))
+    structured_evaluation = (
+        kind != "conversation" and it.get("primary_metric") == "task_completion_rate"
+    )
     if kind == "conversation":
         thumb = (
             f'<a href="/runs/{run_id}/iters/{it["iter"]}/transcript-view" '
@@ -473,14 +622,7 @@ def _iter_card_html(run_id: int, it: dict, kind: str = "design") -> str:
             f"</a>"
         )
         if it.get("primary_metric") == "task_completion_rate":
-            gate = "eligible" if it.get("promotion_eligible") else "blocked"
-            decision = "promoted" if it.get("promoted") else "rejected"
-            stats = (
-                f"<span>tasks <b>{(it.get('primary_score') or 0):.0f}</b></span>"
-                f"<span>SUS diagnostic <b>{it['sus_score']:.0f}</b></span>"
-                f"<span>guardrails <b>{gate}</b></span>"
-                f"<span>decision <b>{decision}</b></span>"
-            )
+            stats = _design_evaluation_html(it)
         else:
             stats = (
                 f"<span>SUS <b>{it['sus_score']:.0f}</b></span>"
@@ -501,10 +643,10 @@ def _iter_card_html(run_id: int, it: dict, kind: str = "design") -> str:
     </span>
   </header>
   {thumb}
-  <div class="stats">
+  <div class="stats{" stats-evaluation" if structured_evaluation else ""}">
     {stats}
   </div>
-  <p class="feedback">{html.escape(it["feedback"])}</p>
+  {f'<p class="feedback">{html.escape(it["feedback"])}</p>' if it.get("primary_metric") != "task_completion_rate" else ""}
   <details>
     <summary>Suggestions</summary>
     <ul>{suggestions}</ul>
@@ -775,6 +917,7 @@ def run_detail(run_id: int) -> str:
         running=running,
         current_iter=cur_iter,
         current_phase=cur_phase,
+        current_phase_at=run.get("current_phase_at"),
         max_iters=run.get("max_iters"),
     )
     error_html = (
@@ -1277,14 +1420,25 @@ async def stream_run(run_id: int, since: int = 0) -> StreamingResponse:
             # Newly completed iterations.
             new = await asyncio.to_thread(store.iterations_for_run, run_id, last_iter)
             for it in new:
-                yield _sse("iteration", {"run_id": run_id, "iter": it})
+                yield _sse(
+                    "iteration",
+                    {
+                        "run_id": run_id,
+                        "iter": it,
+                        "card_html": _iter_card_html(run_id, it, run.get("kind") or "design"),
+                    },
+                )
                 last_iter = it["iter"]
             # Phase transitions (generating / rendering / critiquing / None).
             phase_key = (run.get("current_iter"), run.get("current_phase"))
             if phase_key != last_phase_key:
                 yield _sse(
                     "phase",
-                    {"iter": phase_key[0], "phase": phase_key[1]},
+                    {
+                        "iter": phase_key[0],
+                        "phase": phase_key[1],
+                        "phase_started_at": run.get("current_phase_at"),
+                    },
                 )
                 last_phase_key = phase_key
             if run["status"] != "running":

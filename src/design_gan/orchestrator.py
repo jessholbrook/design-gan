@@ -82,6 +82,10 @@ class LoopConfig:
     optimization_key: str | None = None
     design_tasks: tuple[browser_evaluator.BrowserTask, ...] | None = None
     artifact_policy: artifact_policy.ArtifactPolicy = artifact_policy.DEFAULT_ARTIFACT_POLICY
+    # Bound Claude Agent SDK calls so an unresponsive subprocess cannot leave a
+    # run parked in one phase indefinitely. Browser stages already use short,
+    # explicit Playwright timeouts.
+    model_timeout_seconds: float = 300.0
 
 
 @dataclass
@@ -148,6 +152,15 @@ def _design_evaluation_plan(cfg: LoopConfig) -> product_domains.EvaluationPlan:
     )
 
 
+async def _bounded_model_call(call: Awaitable[Any], *, timeout_seconds: float, stage: str) -> Any:
+    """Run one model-backed stage with a concrete wall-clock ceiling."""
+    try:
+        return await asyncio.wait_for(call, timeout=timeout_seconds)
+    except TimeoutError as exc:
+        timeout_text = f"{timeout_seconds:g}"
+        raise RuntimeError(f"{stage} timed out after {timeout_text}s") from exc
+
+
 async def _design_iterate(
     cfg: LoopConfig,
     run_id: int,
@@ -160,15 +173,19 @@ async def _design_iterate(
     # --- generate -----------------------------------------------------------
     store.update_progress(run_id, i, PHASE_GENERATING)
     console.print("[dim]generating...[/dim]")
-    html, gen_cost = await generator.generate(
-        cfg.model,
-        generator.GenerationRequest(
-            brief=cfg.brief,
-            product_domain=cfg.design_domain,
-            prior_html=prev.artifact,
-            critic_feedback=prev.feedback,
-            suggestions=prev.suggestions,
+    html, gen_cost = await _bounded_model_call(
+        generator.generate(
+            cfg.model,
+            generator.GenerationRequest(
+                brief=cfg.brief,
+                product_domain=cfg.design_domain,
+                prior_html=prev.artifact,
+                critic_feedback=prev.feedback,
+                suggestions=prev.suggestions,
+            ),
         ),
+        timeout_seconds=cfg.model_timeout_seconds,
+        stage="generator",
     )
     cost = gen_cost
     artifact_check = artifact_policy.validate_html(html, cfg.artifact_policy)
@@ -207,22 +224,30 @@ async def _design_iterate(
     critic_breakdown: list[dict[str, Any]] | None = None
     if cfg.critics:
         console.print(f"[dim]critiquing (ensemble of {len(cfg.critics)})...[/dim]")
-        sus, critic_breakdown, crit_cost = await critic.critique_ensemble(
-            cfg.model,
-            cfg.critics,
-            screenshot_path=artifacts["screenshot"].resolve(),
-            dom_html=render.dom_html,
-            axe_violations=render.axe_violations,
-            brief=cfg.brief,
+        sus, critic_breakdown, crit_cost = await _bounded_model_call(
+            critic.critique_ensemble(
+                cfg.model,
+                cfg.critics,
+                screenshot_path=artifacts["screenshot"].resolve(),
+                dom_html=render.dom_html,
+                axe_violations=render.axe_violations,
+                brief=cfg.brief,
+            ),
+            timeout_seconds=cfg.model_timeout_seconds,
+            stage="critic ensemble",
         )
     else:
         console.print("[dim]critiquing...[/dim]")
-        sus, crit_cost = await critic.critique(
-            cfg.model,
-            screenshot_path=artifacts["screenshot"].resolve(),
-            dom_html=render.dom_html,
-            axe_violations=render.axe_violations,
-            brief=cfg.brief,
+        sus, crit_cost = await _bounded_model_call(
+            critic.critique(
+                cfg.model,
+                screenshot_path=artifacts["screenshot"].resolve(),
+                dom_html=render.dom_html,
+                axe_violations=render.axe_violations,
+                brief=cfg.brief,
+            ),
+            timeout_seconds=cfg.model_timeout_seconds,
+            stage="critic",
         )
     cost += crit_cost
 

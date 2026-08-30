@@ -149,60 +149,6 @@
     `;
   }
 
-  function iterCardHtml(it) {
-    const score = it.composite_score;
-    let cls = score >= 80 ? 'score-good' : score >= 60 ? 'score-ok' : 'score-bad';
-    if (it.primary_metric === 'task_completion_rate' && !it.promotion_eligible) {
-      cls += ' score-blocked';
-    }
-    const suggestions = (it.suggestions || []).map((s) =>
-      `<li>${escapeHtml(s)}</li>`).join('');
-    const kind = document.body.dataset.kind || 'design';
-    let thumb, stats;
-    if (kind === 'conversation') {
-      thumb = `<a href="/runs/${runId}/iters/${it.iter}/transcript-view"
-                  target="_blank" class="thumb thumb-transcript">
-                 <div class="thumb-empty muted">open transcript →</div>
-               </a>`;
-      stats = `<span>CUS <b>${it.sus_score.toFixed(0)}</b></span>
-               <span>penalty <b>${it.axe_penalty.toFixed(0)}</b></span>`;
-    } else {
-      thumb = `<a href="/runs/${runId}/iters/${it.iter}/site" target="_blank" class="thumb">
-                 <img src="/runs/${runId}/iters/${it.iter}/screenshot" alt="Iter ${it.iter}" />
-               </a>`;
-      if (it.primary_metric === 'task_completion_rate') {
-        stats = `<span>tasks <b>${(it.primary_score || 0).toFixed(0)}</b></span>
-                 <span>SUS diagnostic <b>${it.sus_score.toFixed(0)}</b></span>
-                 <span>guardrails <b>${it.promotion_eligible ? 'eligible' : 'blocked'}</b></span>
-                 <span>decision <b>${it.promoted ? 'promoted' : 'rejected'}</b></span>`;
-      } else {
-        stats = `<span>SUS <b>${it.sus_score.toFixed(0)}</b></span>
-                 <span>a11y penalty <b>${it.axe_penalty.toFixed(0)}</b></span>`;
-      }
-    }
-    return `<article class="iter-card appearing" data-iter="${it.iter}"
-      data-score="${score}" data-sus="${it.sus_score}"
-      data-eligible="${it.promoted ? 1 : 0}">
-      <header>
-        <span class="iter-num">#${it.iter}</span>
-        <span class="badge ${cls}">${score.toFixed(0)}</span>
-      </header>
-      ${thumb}
-      <div class="stats">${stats}</div>
-      <p class="feedback">${escapeHtml(it.feedback)}</p>
-      <details>
-        <summary>Suggestions</summary>
-        <ul>${suggestions}</ul>
-      </details>
-    </article>`;
-  }
-
-  function escapeHtml(s) {
-    return String(s).replace(/[&<>"']/g, (c) => ({
-      '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;',
-    }[c]));
-  }
-
   function updateSummary(iters) {
     if (!iters.length) return;
     const promotable = iters.filter((it) => it.eligible);
@@ -236,11 +182,13 @@
   const progressEl = document.getElementById('progress-indicator');
   const progressTitle = document.getElementById('progress-title');
   const progressText = document.getElementById('progress-text');
+  const progressElapsed = document.getElementById('progress-elapsed');
   const progressPercent = document.getElementById('progress-percent');
   const progressTrack = document.getElementById('progress-track');
   const progressBar = document.getElementById('progress-bar');
   const progressSteps = Array.from(document.querySelectorAll('.progress-step'));
   const maxIters = Number(progressEl?.dataset.maxIters) || 0;
+  let phaseStartedAt = Number(progressEl?.dataset.phaseStartedAt) * 1000 || 0;
   const phases = ['generating', 'rendering', 'evaluating', 'critiquing'];
   const phaseLabels = {
     generating: 'Generating candidate',
@@ -248,7 +196,19 @@
     evaluating: 'Evaluating frozen tasks',
     critiquing: 'Critiquing the result',
   };
-  function setProgress(iter, phase) {
+  function elapsedLabel(elapsedSeconds) {
+    if (elapsedSeconds < 60) return 'Stage active for less than a minute';
+    const minutes = Math.floor(elapsedSeconds / 60);
+    if (minutes < 60) return `Stage active for ${minutes}m`;
+    return `Stage active for ${Math.floor(minutes / 60)}h ${minutes % 60}m`;
+  }
+  function updateElapsed() {
+    if (!progressEl || !progressElapsed || !phaseStartedAt) return;
+    const elapsedSeconds = Math.max(0, Math.floor((Date.now() - phaseStartedAt) / 1000));
+    progressElapsed.textContent = elapsedLabel(elapsedSeconds);
+    progressEl.classList.toggle('is-delayed', elapsedSeconds >= 120);
+  }
+  function setProgress(iter, phase, startedAt) {
     if (!progressEl) return;
     if (iter && phase) {
       const phaseIndex = Math.max(0, phases.indexOf(phase));
@@ -259,6 +219,8 @@
       const iterationText = maxIters ? `Iteration ${iter} of ${maxIters}` : `Iteration ${iter}`;
       const meta = `${iterationText} · stage ${phaseIndex + 1} of ${phases.length}`;
       const title = phaseLabels[phase] || phase;
+      phaseStartedAt = Number(startedAt) * 1000 || Date.now();
+      progressEl.dataset.phaseStartedAt = String(Number(startedAt) || Date.now() / 1000);
       progressEl.style.display = 'grid';
       progressEl.classList.remove('is-reconnecting');
       progressTitle.textContent = title;
@@ -267,6 +229,7 @@
       progressBar.style.width = `${percent}%`;
       progressTrack.setAttribute('aria-valuenow', String(percent));
       progressTrack.setAttribute('aria-valuetext', `${meta}: ${title}`);
+      updateElapsed();
       progressSteps.forEach((step, index) => {
         step.classList.toggle('is-complete', index < phaseIndex);
         step.classList.toggle('is-active', index === phaseIndex);
@@ -275,6 +238,8 @@
       progressEl.style.display = 'none';
     }
   }
+  updateElapsed();
+  window.setInterval(updateElapsed, 10000);
 
   // Live updates via SSE — tell the server where we already are.
   const since = iters.length ? iters[iters.length - 1].iter : 0;
@@ -282,8 +247,10 @@
   es.addEventListener('iteration', (e) => {
     const payload = JSON.parse(e.data);
     const it = payload.iter;
-    // Append card
-    grid.insertAdjacentHTML('beforeend', iterCardHtml(it));
+    // The server renders the card so initial and streamed evaluations use one
+    // formatting path and one escaping boundary.
+    grid.insertAdjacentHTML('beforeend', payload.card_html);
+    grid.lastElementChild?.classList.add('appearing');
     // Update chart data
     iters.push({
       iter: it.iter,
@@ -295,8 +262,8 @@
     updateSummary(iters);
   });
   es.addEventListener('phase', (e) => {
-    const { iter, phase } = JSON.parse(e.data);
-    setProgress(iter, phase);
+    const { iter, phase, phase_started_at } = JSON.parse(e.data);
+    setProgress(iter, phase, phase_started_at);
   });
   es.addEventListener('done', (e) => {
     const { run } = JSON.parse(e.data);

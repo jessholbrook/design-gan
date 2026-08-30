@@ -195,7 +195,7 @@ pip install -e ".[dev]"
 pytest
 ```
 
-292 tests covering the browser-evaluator and artifact contracts, primary
+294 tests covering the browser-evaluator and artifact contracts, primary
 scoring, paired promotion decisions, storage (schema + migration), the extractor
 helpers, the orchestrator loop (with generator/critic/renderer faked), the
 viewer's HTTP endpoints (including the scrubber and evaluator review routes),
