@@ -194,12 +194,41 @@ def _runs_sidebar(active_id: int | None) -> str:
     return f'<aside class="sidebar"><h3>Runs</h3>{"".join(items)}</aside>'
 
 
+def _field_term(
+    field_name: str,
+    label: str,
+    explanation: str,
+    *,
+    term_name: str | None = None,
+) -> str:
+    """Render one form term with hover and keyboard-focus help."""
+    term_attr = f' data-form-term="{html.escape(term_name, quote=True)}"' if term_name else ""
+    escaped_field_name = html.escape(field_name, quote=True)
+    escaped_label = html.escape(label)
+    escaped_explanation = html.escape(explanation, quote=True)
+    return (
+        '<span class="field-term">'
+        f'<span id="{escaped_field_name}-label"{term_attr}>{escaped_label}</span>'
+        f'<span id="{escaped_field_name}-help" class="info-tip" tabindex="0" role="note" '
+        f'aria-label="Help: {escaped_explanation}" '
+        f'data-tooltip="{escaped_explanation}"><span class="sr-only">'
+        f"{escaped_explanation}</span></span></span>"
+    )
+
+
 def _new_run_form() -> str:
     gated = _required_start_token() is not None
     gated_attr = ' data-requires-token="1"' if gated else ""
+    access_token_term = _field_term(
+        "token",
+        "Access token",
+        "Shared write token required to start runs on a gated deployment. Browsing existing "
+        "results does not require it.",
+    )
     token_field = (
-        '<label class="token-field">Access token'
+        f'<label class="token-field">{access_token_term}'
         '<input type="password" name="token" autocomplete="off" '
+        'aria-labelledby="token-label" aria-describedby="token-help" '
         'placeholder="Required to start a run on this deployment" /></label>'
         if gated
         else ""
@@ -210,47 +239,112 @@ def _new_run_form() -> str:
         if gated
         else ""
     )
+    kind_term = _field_term(
+        "kind",
+        "Kind",
+        "Choose whether this run optimizes a single-page website or an assistant conversation.",
+    )
+    brief_term = _field_term(
+        "brief",
+        "Brief",
+        "For a design run, describe the page to build. For a conversation run, state the "
+        "assistant goal or user request.",
+        term_name="brief",
+    )
+    max_iterations_term = _field_term(
+        "max-iters",
+        "Max iterations",
+        "Maximum number of candidate generations before the run stops.",
+    )
+    patience_term = _field_term(
+        "patience",
+        "Patience",
+        "Stop after this many consecutive candidates fail to produce an eligible improvement.",
+    )
+    tolerance_term = _field_term(
+        "tolerance",
+        "Tolerance",
+        "Minimum task-score improvement, in percentage points, required to count as progress "
+        "and reset patience.",
+    )
+    model_term = _field_term(
+        "model",
+        "Model",
+        "Claude model used for generation and critique. Keep the default unless comparing models.",
+    )
+    domain_term = _field_term(
+        "design-domain",
+        "Product domain",
+        "Selects the versioned frozen browser-task suite used as the primary product-quality "
+        "measure.",
+    )
+    trials_term = _field_term(
+        "evaluation-trials",
+        "Trials per task",
+        "Repeated browser attempts for each frozen task. More trials take longer but provide "
+        "more stable promotion evidence.",
+    )
+    alpha_term = _field_term(
+        "promotion-alpha",
+        "Promotion alpha",
+        "Maximum one-sided sign-test p-value allowed for promotion. Lower values require "
+        "stronger evidence that the candidate improved.",
+    )
+    optimization_key_term = _field_term(
+        "optimization-key",
+        "Optimization key (optional)",
+        "Stable identity shared by runs optimizing the same product. Leave blank to derive it "
+        "from the brief.",
+    )
+    conversation_turns_term = _field_term(
+        "conversation-turns",
+        "Max conversation turns",
+        "Maximum number of user-assistant exchanges evaluated in a conversation run.",
+    )
     return f"""<section class="card new-run">
   <h2>Start a new run</h2>
   {gated_note}
   <form id="new-run-form"{gated_attr}>
-    <label>Kind
-      <select name="kind">
+    <label>{kind_term}
+      <select name="kind" aria-labelledby="kind-label" aria-describedby="kind-help">
         <option value="design">Design — evolve a single-page website</option>
         <option value="conversation">Conversation — evolve an assistant for a 1–5 turn chat</option>
       </select>
     </label>
-    <label data-brief-label>Brief
-      <textarea name="brief" rows="3" required
+    <label data-brief-label>{brief_term}
+      <textarea name="brief" rows="3" required aria-labelledby="brief-label"
+        aria-describedby="brief-help"
         placeholder="A landing page for a weekend cycling tour in rural Vermont."></textarea>
     </label>
     <div class="row">
-      <label>Max iterations<input type="number" name="max_iters" value="15" min="1" max="50" /></label>
-      <label>Patience<input type="number" name="patience" value="3" min="1" max="10" /></label>
-      <label>Tolerance<input type="number" name="tolerance" value="1.0" step="0.5" min="0" /></label>
-      <label>Model<input type="text" name="model" value="{html.escape(_default_model())}" /></label>
+      <label>{max_iterations_term}<input type="number" name="max_iters" value="15" min="1" max="50" aria-labelledby="max-iters-label" aria-describedby="max-iters-help" /></label>
+      <label>{patience_term}<input type="number" name="patience" value="3" min="1" max="10" aria-labelledby="patience-label" aria-describedby="patience-help" /></label>
+      <label>{tolerance_term}<input type="number" name="tolerance" value="1.0" step="0.5" min="0" aria-labelledby="tolerance-label" aria-describedby="tolerance-help" /></label>
+      <label>{model_term}<input type="text" name="model" value="{html.escape(_default_model())}" aria-labelledby="model-label" aria-describedby="model-help" /></label>
     </div>
     <div class="row" data-design-only>
-      <label>Product domain
-        <select name="design_domain">
+      <label>{domain_term}
+        <select name="design_domain" aria-labelledby="design-domain-label" aria-describedby="design-domain-help">
           <option value="landing-page">Landing page — primary action</option>
           <option value="lead-generation">Lead generation — complete form</option>
           <option value="storefront">Storefront — add product to cart</option>
         </select>
       </label>
-      <label>Trials per task
-        <input type="number" name="evaluation_trials" value="{product_domains.DEFAULT_EVALUATION_TRIALS}" min="1" max="50" />
+      <label>{trials_term}
+        <input type="number" name="evaluation_trials" value="{product_domains.DEFAULT_EVALUATION_TRIALS}" min="1" max="50" aria-labelledby="evaluation-trials-label" aria-describedby="evaluation-trials-help" />
       </label>
-      <label>Promotion alpha
-        <input type="number" name="promotion_alpha" value="0.05" step="0.01" min="0.0001" max="1" />
+      <label>{alpha_term}
+        <input type="number" name="promotion_alpha" value="{product_domains.DEFAULT_PROMOTION_ALPHA}" step="0.0001" min="0.0001" max="1" aria-labelledby="promotion-alpha-label" aria-describedby="promotion-alpha-help" />
       </label>
     </div>
-    <label data-design-only>Optimization key (optional)
+    <label data-design-only>{optimization_key_term}
       <input type="text" name="optimization_key" maxlength="160"
+        aria-labelledby="optimization-key-label" aria-describedby="optimization-key-help"
         placeholder="Shared key for runs optimizing the same product" />
     </label>
-    <label data-conversation-only hidden>Max conversation turns
-      <input type="number" name="max_conversation_turns" value="5" min="1" max="10" />
+    <label data-conversation-only hidden>{conversation_turns_term}
+      <input type="number" name="max_conversation_turns" value="5" min="1" max="10"
+        aria-labelledby="conversation-turns-label" aria-describedby="conversation-turns-help" />
     </label>
     {token_field}
     <button type="submit">Run</button>

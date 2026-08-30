@@ -17,7 +17,7 @@
   // Kind selector: toggle conversation-only fields + brief placeholder.
   const kindSel = form.querySelector('select[name="kind"]');
   const briefTA = form.querySelector('textarea[name="brief"]');
-  const briefLabel = form.querySelector('[data-brief-label]');
+  const briefTerm = form.querySelector('[data-form-term="brief"]');
   const conversationOnly = form.querySelectorAll('[data-conversation-only]');
   const designOnly = form.querySelectorAll('[data-design-only]');
   const briefPlaceholders = {
@@ -27,8 +27,8 @@
   function applyKind() {
     const kind = kindSel ? kindSel.value : 'design';
     if (briefTA) briefTA.placeholder = briefPlaceholders[kind] || '';
-    if (briefLabel) {
-      briefLabel.firstChild.nodeValue = kind === 'conversation' ? 'Goal' : 'Brief';
+    if (briefTerm) {
+      briefTerm.textContent = kind === 'conversation' ? 'Goal' : 'Brief';
     }
     conversationOnly.forEach((el) => {
       if (kind === 'conversation') el.removeAttribute('hidden');

@@ -83,6 +83,18 @@ class TestIndex:
         r = client.get("/")
         assert 'class="side-item' in r.text
 
+    def test_new_run_form_has_valid_alpha_default_and_help_for_every_term(self, client: TestClient):
+        page = client.get("/").text
+
+        assert 'name="promotion_alpha" value="0.05" step="0.0001" min="0.0001" max="1"' in page
+        assert page.count('class="info-tip"') == 11
+        assert page.count('tabindex="0" role="note" aria-label="Help:') == 11
+        assert page.count("aria-labelledby=") == 11
+        assert page.count("aria-describedby=") == 11
+        assert "Maximum one-sided sign-test p-value allowed for promotion" in page
+        assert "Minimum task-score improvement, in percentage points" in page
+        assert 'data-form-term="brief"' in page
+
 
 class TestRunDetail:
     def test_known_run_renders(self, client: TestClient):
@@ -171,6 +183,14 @@ class TestStatic:
         assert r.status_code == 200
         assert "/api/evaluator-cases" in r.text
         assert "design_gan_reviewer_id" in r.text
+
+    def test_app_js_updates_the_brief_term_without_replacing_its_help(self, client: TestClient):
+        r = client.get("/static/app.js")
+
+        assert r.status_code == 200
+        assert "querySelector('[data-form-term=\"brief\"]')" in r.text
+        assert "briefTerm.textContent" in r.text
+        assert "firstChild.nodeValue" not in r.text
 
     def test_static_traversal_rejected(self, client: TestClient):
         # Path traversal via substring check.
@@ -548,6 +568,7 @@ class TestStartTokenGate:
         r = gated_client.get("/")
         assert 'name="token"' in r.text
         assert "requires a shared token" in r.text
+        assert "Shared write token required to start runs" in r.text
 
     def test_form_hides_token_field_by_default(self, client: TestClient):
         r = client.get("/")
