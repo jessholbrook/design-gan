@@ -4,7 +4,7 @@
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width,initial-scale=1" />
   <title>design-gan — a dual-agent loop that evolves website and conversation designs</title>
-  <meta name="description" content="An autoresearch-style experiment with two sides: an evolution loop over single-page websites scored on the System Usability Scale, and the same loop over conversations scored on a parallel Conversation Usability Scale." />
+  <meta name="description" content="An autoresearch-style product-optimization loop for single-page websites: frozen browser tasks are the primary metric, SUS is diagnostic feedback, and accessibility and correctness are hard promotion guardrails." />
   <style>
     :root {
       --bg: #faf9f6;
@@ -406,10 +406,55 @@
     .sgs-asked ul { margin: 8px 0 0; padding-left: 18px; }
     .sgs-asked li { margin-bottom: 6px; }
 
+    /* ===== Current v2 evaluation snapshot ===== */
+    .v2-panel {
+      margin-top: 28px; padding: 24px; background: #fff;
+      border: 1px solid var(--border); border-radius: 12px;
+      box-shadow: 0 8px 28px rgba(15, 23, 42, 0.06);
+    }
+    .v2-panel h3 { margin-top: 0; }
+    .viewer-shot {
+      display: block; width: 100%; margin: 22px 0 10px;
+      border: 1px solid var(--border); border-radius: 10px;
+    }
+    .shot-caption { margin: 0; color: var(--muted); font-size: 13px; }
+    .v2-metrics {
+      display: grid; grid-template-columns: repeat(4, minmax(0, 1fr));
+      gap: 12px; margin: 24px 0;
+    }
+    .v2-metric {
+      padding: 16px; border: 1px solid var(--border); border-radius: 10px;
+      background: var(--bg);
+    }
+    .v2-metric span {
+      display: block; margin-bottom: 6px; color: var(--muted);
+      font-size: 11px; font-weight: 700; letter-spacing: .08em;
+      text-transform: uppercase;
+    }
+    .v2-metric strong { font-size: 24px; font-variant-numeric: tabular-nums; }
+    .v2-metric .pass { color: var(--good); }
+    .v2-metric .blocked { color: var(--bad); }
+    .result-strip {
+      display: grid; grid-template-columns: 1fr 1fr; gap: 14px;
+      margin-top: 18px;
+    }
+    .result {
+      padding: 18px; border: 1px solid var(--border); border-radius: 10px;
+      background: #fff;
+    }
+    .result h4 { margin: 0 0 10px; }
+    .result ul { margin: 0; padding-left: 20px; }
+    .result li { margin-bottom: 6px; }
+    .guardrail-note {
+      margin-top: 18px; padding: 14px 16px; border: 1px solid #fecaca;
+      border-radius: 10px; background: #fff7f7; color: #991b1b;
+    }
+
     @media (max-width: 720px) {
       .iter-body { grid-template-columns: 1fr; }
       .sus-row { grid-template-columns: repeat(5, 1fr); }
       .bubble { max-width: 95%; }
+      .v2-metrics, .result-strip { grid-template-columns: 1fr 1fr; }
     }
   </style>
 </head>
@@ -420,32 +465,33 @@
       <h1>Auto improving websites and conversations with agents.</h1>
       <p class="lede">
         <strong>design-gan</strong> is a dual-agent loop: a <em>generator</em>
-        writes a single-page website from a brief, a <em>critic</em> scores it
-        on the System Usability Scale, and the feedback rolls forward into the
-        next draft — until the composite score plateaus.
+        writes a single-page website from a brief, frozen browser tasks measure
+        whether it actually works, and the feedback rolls forward into the next
+        draft. SUS remains diagnostic; accessibility and correctness decide
+        whether a higher task score is safe to promote.
       </p>
       <div class="actions">
         <a class="btn primary" href="https://design-gan.fly.dev/">Try the live app &rarr;</a>
         <a class="btn" href="https://github.com/jessholbrook/design-gan">View on GitHub</a>
-        <a class="btn" href="#the-run">Skip to the run</a>
+        <a class="btn" href="#v2-run">Skip to the run</a>
       </div>
 
       <div class="stats">
         <div class="stat">
-          <div class="stat-label">Peak composite</div>
-          <div class="stat-value good">76</div>
+          <div class="stat-label">Candidate task score</div>
+          <div class="stat-value good">100</div>
         </div>
         <div class="stat">
-          <div class="stat-label">Starting composite</div>
-          <div class="stat-value">52</div>
+          <div class="stat-label">Prior task score</div>
+          <div class="stat-value">0</div>
         </div>
         <div class="stat">
-          <div class="stat-label">Delta to peak</div>
-          <div class="stat-value good">+24</div>
+          <div class="stat-label">Repeated trials</div>
+          <div class="stat-value good">10</div>
         </div>
         <div class="stat">
-          <div class="stat-label">Iterations to peak</div>
-          <div class="stat-value">3</div>
+          <div class="stat-label">Promotion</div>
+          <div class="stat-value">blocked</div>
         </div>
       </div>
     </section>
@@ -461,59 +507,117 @@
         numeric metric: single-page websites and short conversations.
       </p>
       <p>
-        Two main differences. First, we split the work into a
+        Two main differences remain. First, we split the work into a
         <strong>generator</strong> and a <strong>critic</strong> — hence the
         &ldquo;gan&rdquo; in the name — rather than running one agent that
-        both modifies and evaluates. Second, the score is a Claude critic's
-        verdict on a standard usability questionnaire, anchored by objective
-        penalties (<a href="https://github.com/dequelabs/axe-core">axe-core</a>
-        violations for websites; repetition and boilerplate in conversations),
-        because there's no bits-per-byte to minimize.
+        both modifies and evaluates. Second, the design loop now has a concrete
+        product objective: completion across a frozen suite of behavioral
+        browser tasks. The suite, trial count, promotion policy, and mutable
+        artifact boundary are fixed before a run starts.
       </p>
       <p>
         A generator agent writes a standalone HTML document (or a conversation
         assistant's system prompt) from the brief. A headless Chromium renders
         the page — or a user-simulator agent runs the dialogue — and the
-        rendered artifact goes to the critic. The critic fills out the 10-item
+        browser evaluator attempts the same pointer and keyboard scenarios in
+        isolated trials. The critic also fills out the 10-item
         <a href="https://measuringu.com/sus/">System Usability Scale</a> (or
         the parallel Conversation Usability Scale), writes feedback, and
         returns a short list of concrete next-step suggestions that feed the
-        next generator call. The loop stops after a configurable window of
-        iterations produce no meaningful composite-score gain, or at a hard
-        iteration cap.
+        next generator call. A candidate is promoted only when its paired task
+        evidence clears the configured effect and significance thresholds and
+        every artifact, accessibility, and correctness guardrail passes.
       </p>
     </section>
 
     <section id="how-it-works">
       <h2>How a single iteration works</h2>
-      <pre class="diagram">brief ──▶ generator ──▶ HTML ──▶ headless Chromium
-                                          │
-                                          ├─▶ screenshot
-                                          ├─▶ DOM
-                                          └─▶ axe-core violations
-                                                    │
-                                                    ▼
-                         critic ◀── System Usability Scale
-                           │
-                           ├─▶ SUS answers (10 × 1–5)
-                           ├─▶ prose feedback
-                           └─▶ prioritized suggestions ──▶ next generator call</pre>
+      <pre class="diagram">brief ──▶ generator ──▶ bounded HTML artifact
+                                  │
+                                  ├─▶ frozen browser tasks × repeated trials
+                                  │             └─▶ task completion (primary)
+                                  ├─▶ axe-core + runtime checks (guardrails)
+                                  └─▶ screenshot ──▶ critic ──▶ SUS + feedback
+                                                                (diagnostic)
+                                                   │
+                                                   ▼
+                        paired significance + minimum effect + hard guardrails
+                                                   │
+                              promoted parent ◀────┴────▶ rejected history</pre>
       <p>
-        The composite score is the standard SUS score (0–100) minus a weighted
-        axe-core penalty. The accessibility penalty is
-        capped — but it keeps the critic honest relative to visual appeal - e.g. a solid design can't hide a
-        colour-contrast failure or missing alt text.
+        There is one north-star metric for design runs: behavioral task
+        completion from 0–100. SUS explains perceived usability but cannot win
+        a promotion. A candidate with serious accessibility violations,
+        runtime errors, evaluator action failures, or a broken artifact
+        boundary is rejected even when its task score improves.
       </p>
     </section>
 
+    <section id="v2-run">
+      <h2>A current v2 run</h2>
+      <p class="lead">
+        Brief: &ldquo;A landing page for a cycling tour company in Vermont.&rdquo;
+      </p>
+      <p>
+        This short local verification run is deliberately more useful than a
+        clean success story. The first recorded candidate did not respond to
+        either pointer or keyboard activation. The next candidate made the
+        primary action work in every repeated trial, but was still rejected:
+        four serious colour-contrast failures tripped the accessibility
+        guardrail. That is the v2 contract in action — a better north-star score
+        is necessary, not sufficient.
+      </p>
+
+      <div class="v2-panel">
+        <h3>Behavioral evidence and promotion decision</h3>
+        <div class="v2-metrics">
+          <div class="v2-metric"><span>Task score</span><strong class="pass">100%</strong></div>
+          <div class="v2-metric"><span>Trials passed</span><strong class="pass">10 / 10</strong></div>
+          <div class="v2-metric"><span>SUS diagnostic</span><strong>82.5</strong></div>
+          <div class="v2-metric"><span>Decision</span><strong class="blocked">Rejected</strong></div>
+        </div>
+        <div class="result-strip">
+          <div class="result">
+            <h4>Previous candidate</h4>
+            <ul>
+              <li>0 / 5 pointer trials passed</li>
+              <li>0 / 5 keyboard trials passed</li>
+              <li>SUS diagnostic: 85</li>
+            </ul>
+          </div>
+          <div class="result">
+            <h4>Next candidate</h4>
+            <ul>
+              <li>5 / 5 pointer trials passed</li>
+              <li>5 / 5 keyboard trials passed</li>
+              <li>Artifact and correctness checks passed</li>
+            </ul>
+          </div>
+        </div>
+        <p class="guardrail-note">
+          <strong>Promotion blocked:</strong> axe-core found four serious
+          colour-contrast violations. No holdout was consumed because no
+          candidate cleared the development promotion gate.
+        </p>
+        <img class="viewer-shot" src="images/run-page.png"
+             alt="Design-GAN v2 run page showing task score, repeated trials, SUS diagnostic feedback, guardrails, and rejected promotion decisions." />
+        <p class="shot-caption">
+          The refreshed run viewer keeps every candidate in history and exposes
+          task evidence, diagnostics, guardrails, and the final decision side by side.
+        </p>
+      </div>
+    </section>
+
     <section id="the-run">
-      <h2>A run, iteration by iteration</h2>
+      <h2>The original v1 run, iteration by iteration</h2>
       <p class="lead">
         Brief: &ldquo;A landing page for a weekend cycling tour in rural Vermont.&rdquo;
       </p>
       <p>
-        Four iterations of the real loop against one brief — pages you could
-        imagine coming upon in the real world. The composite score climbed
+        Preserved here as the original project trace, these four iterations use
+        the earlier SUS-minus-accessibility composite rather than the current
+        promotion contract. They are still useful for inspecting how designs
+        and critic suggestions evolved. The composite score climbed
         from a competent-but-flawed baseline (52) to a polished peak at
         iteration 3 (76), then slipped back as the critic tightened its
         stance on colour-contrast failures — a textbook local-optimum
@@ -1027,16 +1131,17 @@ Go. Start the timer as soon as this window closes.</div></div><div class="bubble
 ]</code></pre>
       </details>
     </section>
-    </section>
 
     <section id="design-notes">
       <h2>Design notes</h2>
       <ul>
-        <li><strong>The critic sees the rendered page, not the code.</strong> Code-only critique is cheap but correlates poorly with real usability.</li>
-        <li><strong>Subjective + objective.</strong> SUS alone is gameable; axe-core anchors the score to measurable a11y signals.</li>
-        <li><strong>Convergence, operationalised.</strong> &ldquo;No further improvements&rdquo; = <code>patience</code> iterations in a row without a composite gain of at least <code>tolerance</code> points.</li>
+        <li><strong>The evaluator uses the rendered page.</strong> Playwright performs real pointer and keyboard actions against isolated browser trials; code-only critique is not the north-star.</li>
+        <li><strong>One primary metric.</strong> Design candidates compete on frozen behavioral task completion. SUS remains visible as diagnostic feedback and never contributes to the promotion score.</li>
+        <li><strong>Hard guardrails.</strong> Serious accessibility violations, correctness failures, evaluator errors, or a broken standalone-artifact boundary block promotion instead of being blended into a composite.</li>
+        <li><strong>Paired promotion.</strong> Candidate and parent outcomes are compared on matching tasks and trials using a minimum effect and a one-sided exact sign test.</li>
+        <li><strong>Frozen development and holdout suites.</strong> Development evidence drives iteration; untouched holdout tasks are consumed only by a final promoted artifact.</li>
+        <li><strong>History is append-only.</strong> Rejected candidates, parent lineage, task evidence, and promotion reasons remain available in SQLite and the viewer/scrubber.</li>
         <li><strong>Structured output.</strong> The critic uses Pydantic-validated JSON so a malformed response triggers a retry with a stricter nudge.</li>
-        <li><strong>Prompt caching.</strong> System prompts are cached as <code>ephemeral</code>, so iteration <em>N+1</em> pays near-zero for the static instructions.</li>
       </ul>
     </section>
 
@@ -1065,7 +1170,7 @@ design-gan converse "I keep procrastinating on writing my thesis. How do I actua
       </p>
 
       <details class="dataset">
-        <summary>Raw dataset for this run (JSON)</summary>
+        <summary>Raw dataset for the historical v1 design run (JSON)</summary>
         <pre><code>[
   {
     "iter": 1,
@@ -1186,10 +1291,10 @@ design-gan converse "I keep procrastinating on writing my thesis. How do I actua
     <footer>
       <p>
         An autoresearch-style experiment. Generator, critic, and user
-        simulator are all Claude Sonnet. Both runs on this page are real
-        executions of the loop against the stated briefs; every screenshot,
-        transcript, SUS/CUS answer, feedback line, and suggestion is verbatim
-        from the model.
+        simulator are Claude models. The current v2 viewer snapshot and the
+        preserved v1 design and conversation traces are real executions against
+        the stated briefs. The historical screenshots, transcripts, SUS/CUS
+        answers, feedback lines, and suggestions remain verbatim from those runs.
         <a href="https://github.com/jessholbrook/design-gan">Source on GitHub</a>.
       </p>
     </footer>

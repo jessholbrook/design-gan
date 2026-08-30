@@ -7,7 +7,7 @@ product-quality score. A **critic** still reports the System Usability Scale
 (SUS) as diagnostic feedback, while axe-core accessibility and browser/runtime
 correctness act as hard promotion guardrails.
 
-![Scrubbing through a run — iteration #3 on the left, critic verdict on the right.](docs/images/scrubber-single.png)
+![Scrubbing through a v2 run — generated artifact on the left, behavioral evidence, guardrails, and diagnostic feedback on the right.](docs/images/scrubber-single.png)
 
 ## Architecture
 
@@ -131,7 +131,7 @@ run. Duplicate run/task provenance and duplicate artifact/task evidence do not
 qualify. Passing this initial coverage gate permits a comparison; it does not
 claim that the reviewed corpus represents production traffic.
 
-![Run page — score over iterations and per-iteration cards.](docs/images/run-page.png)
+![V2 run page — task completion over iterations and structured evaluation cards.](docs/images/run-page.png)
 
 Each run page has a **Scrub ▸** link to a dedicated scrubber: a timeline
 slider with the screenshot on the left and the critic's verdict on the
@@ -141,7 +141,7 @@ exactly what changed, and each iteration surfaces the prior critic's
 suggestions that produced it. Conversation runs scrub through transcripts
 instead of screenshots.
 
-![Scrubber compare mode — iteration #1 vs the peak iteration behind a draggable divider.](docs/images/scrubber-compare.png)
+![Scrubber compare mode — the latest candidate versus its parent behind a draggable divider.](docs/images/scrubber-compare.png)
 
 ## Deploy to Fly.io
 
