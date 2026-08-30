@@ -173,6 +173,13 @@ a:hover { text-decoration: underline; }
 .review-meta { color: var(--muted); font-size: 12px; }
 .review-pass { color: var(--good); }
 .review-fail { color: var(--bad); }
+.review-blind {
+  padding: 9px 10px;
+  border-left: 3px solid var(--accent);
+  background: #f5f3ff;
+  color: var(--muted);
+}
+.review-links { white-space: nowrap; }
 .review-form { margin-top: 18px; }
 .review-actions { display: flex; gap: 10px; margin-top: 10px; }
 .review-actions button {

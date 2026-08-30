@@ -69,8 +69,8 @@ critic ──► SUS + feedback (diagnostic) ───────────�
   protection for concurrent incumbent challenges.
 - **`viewer.py`** — FastAPI viewer to browse iterations, plus a scrubber
   (`/runs/{id}/scrub`) for stepping through the evolution with a before/after
-  compare slider and an evaluator review queue (`/evaluator-review`) for
-  operator-labeling stored run/task outcomes.
+  compare slider and a balanced, blinded evaluator review queue
+  (`/evaluator-review`) for independently labeling stored run/task outcomes.
 
 ## Setup
 
@@ -85,7 +85,7 @@ cp .env.example .env  # add your ANTHROPIC_API_KEY
 ```bash
 # Launch the web UI: kick off runs, watch them live, browse history
 design-gan viewer  # http://127.0.0.1:8000
-# Review generated failures and save provenance-backed labels in the browser:
+# Review a balanced sample and save provenance-backed labels in the browser:
 # http://127.0.0.1:8000/evaluator-review
 
 # Or run one evolution loop from the terminal
@@ -195,7 +195,7 @@ pip install -e ".[dev]"
 pytest
 ```
 
-284 tests covering the browser-evaluator and artifact contracts, primary
+287 tests covering the browser-evaluator and artifact contracts, primary
 scoring, paired promotion decisions, storage (schema + migration), the extractor
 helpers, the orchestrator loop (with generator/critic/renderer faked), the
 viewer's HTTP endpoints (including the scrubber and evaluator review routes),
@@ -265,6 +265,6 @@ cases, and a concrete evaluator implementation.
 
 The completed concrete roadmap is in [`docs/roadmap.md`](docs/roadmap.md).
 Remaining research is evidence collection: accumulate reviewed cases from real
-generated runs using the review queue, then admit a model-driven actor only if
-it beats the semantic baseline within explicit cost, latency, and repeatability
-budgets.
+generated runs using the balanced, blinded queue, then admit a model-driven
+actor only if it beats the semantic baseline within explicit cost, latency, and
+repeatability budgets.
