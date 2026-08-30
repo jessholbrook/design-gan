@@ -11,7 +11,7 @@ from __future__ import annotations
 import json
 import re
 import time
-from collections import Counter
+from collections import Counter, deque
 from collections.abc import Awaitable, Callable, Iterable
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
@@ -40,6 +40,13 @@ ADMISSION_MIN_CASES_PER_DOMAIN = 8
 ADMISSION_MIN_LABELS_PER_DOMAIN = 3
 ADMISSION_MIN_RUNS_PER_DOMAIN = 3
 ADMISSION_MAX_CASES_PER_RUN = 4
+
+# Human-label collection should not simply mirror the evaluator's failure queue:
+# doing so would over-sample observed failures and show the reviewer the answer
+# being audited. This policy only controls candidate selection. The human label
+# remains independent and the admission audit below remains the final gate.
+REVIEW_SAMPLING_POLICY_VERSION = 1
+REVIEW_MAX_CANDIDATES_PER_RUN = ADMISSION_MAX_CASES_PER_RUN
 
 
 def proportion_interval(
@@ -700,7 +707,7 @@ def review_candidates(
     *,
     captured_cases: Iterable[BenchmarkCase] = (),
     failed_only: bool = True,
-    limit: int = 100,
+    limit: int | None = 100,
 ) -> tuple[ReviewCandidate, ...]:
     """Find concrete task outcomes suitable for operator validity review.
 
@@ -709,7 +716,7 @@ def review_candidates(
     *should* pass on the artifact, while ``observed_pass`` reports whether every
     recorded evaluator attempt passed without a runtime error.
     """
-    if limit < 1:
+    if limit is not None and limit < 1:
         raise ValueError("limit must be positive")
     captured: dict[tuple[int, int, str], list[BenchmarkCase]] = {}
     for case in captured_cases:
@@ -777,9 +784,77 @@ def review_candidates(
                         ),
                     )
                 )
-                if len(candidates) >= limit:
+                if limit is not None and len(candidates) >= limit:
                     return tuple(candidates)
     return tuple(candidates)
+
+
+def balanced_review_candidates(
+    store: storage.Storage,
+    *,
+    captured_cases: Iterable[BenchmarkCase] = (),
+    limit: int = 100,
+    max_candidates_per_run: int = REVIEW_MAX_CANDIDATES_PER_RUN,
+) -> tuple[ReviewCandidate, ...]:
+    """Select an outcome-stratified, bounded queue for independent review.
+
+    The selector scans all eligible design-run outcomes, removes evidence that
+    already has an audited label, deduplicates identical artifact/task pairs,
+    and round-robins across domain and evaluator-observed outcome. Observations
+    are used only for server-side sampling; the blinded viewer/API decide which
+    fields a reviewer can see.
+    """
+    if limit < 1:
+        raise ValueError("limit must be positive")
+    if max_candidates_per_run < 1:
+        raise ValueError("max_candidates_per_run must be positive")
+
+    available = tuple(
+        candidate
+        for candidate in review_candidates(
+            store,
+            captured_cases=captured_cases,
+            failed_only=False,
+            limit=None,
+        )
+        if not candidate.audited_case_ids
+    )
+    domains = [domain for domain in ADMISSION_DOMAINS if any(c.domain == domain for c in available)]
+    domains.extend(sorted({candidate.domain for candidate in available} - set(domains)))
+    bucket_order = [(domain, observed) for observed in (False, True) for domain in domains]
+    buckets = {
+        key: deque(
+            candidate
+            for candidate in available
+            if (candidate.domain, candidate.observed_pass) == key
+        )
+        for key in bucket_order
+    }
+
+    selected: list[ReviewCandidate] = []
+    cases_per_run: Counter[int] = Counter()
+    seen_artifact_tasks: set[tuple[str, str]] = set()
+    while len(selected) < limit:
+        progressed = False
+        for key in bucket_order:
+            bucket = buckets[key]
+            while bucket:
+                candidate = bucket.popleft()
+                evidence_key = (candidate.artifact_sha256, candidate.task_id)
+                if evidence_key in seen_artifact_tasks:
+                    continue
+                if cases_per_run[candidate.run_id] >= max_candidates_per_run:
+                    continue
+                selected.append(candidate)
+                seen_artifact_tasks.add(evidence_key)
+                cases_per_run[candidate.run_id] += 1
+                progressed = True
+                break
+            if len(selected) >= limit:
+                break
+        if not progressed:
+            break
+    return tuple(selected)
 
 
 def capture_run_case(

@@ -449,7 +449,9 @@ class TestStartTokenGate:
         run_id, private_html = _seed_review_candidate()
 
         response = gated_client.get("/api/evaluator-case-candidates")
+        blinded = gated_client.get("/api/evaluator-review-queue")
         page = gated_client.get("/evaluator-review")
+        diagnostics = gated_client.get("/evaluator-review?show_observation=true")
 
         assert response.status_code == 200
         assert response.json()[0]["run_id"] == run_id
@@ -457,14 +459,34 @@ class TestStartTokenGate:
         assert response.json()[0]["observed_pass"] is False
         assert response.json()[0]["site_url"] == f"/runs/{run_id}/iters/1/site"
         assert private_html not in response.text
+        assert blinded.status_code == 200
+        assert blinded.json()["sampling_policy_version"] == 1
+        assert blinded.json()["maximum_candidates_per_run"] == 4
+        assert blinded.json()["blinded"] is True
+        assert blinded.json()["items"][0]["run_id"] == run_id
+        assert "observed_pass" not in blinded.json()["items"][0]
+        assert "passed_trials" not in blinded.json()["items"][0]
+        assert "errors" not in blinded.json()["items"][0]
+        assert "captured_case_ids" not in blinded.json()["items"][0]
+        assert private_html not in blinded.text
         assert page.status_code == 200
-        assert "The evaluator's observed result is context, not the label." in page.text
+        assert "independently label whether the frozen task" in page.text
+        assert "hidden for independent labeling" in page.text
+        assert "Evaluator observed" not in page.text
+        assert "no response observed" not in page.text
         assert "landing-review-task" in page.text
         assert "/static/evaluator-review.js" in page.text
         assert "Actor-comparison readiness" in page.text
         assert "BLOCKED" in page.text
         assert 'id="reviewer-id"' in page.text
         assert private_html not in page.text
+        assert "Evaluator observed" in diagnostics.text
+        assert "no response observed" in diagnostics.text
+
+    def test_review_page_rejects_unknown_sampling_mode(self, gated_client: TestClient):
+        response = gated_client.get("/evaluator-review?mode=unknown")
+
+        assert response.status_code == 422
 
     def test_capture_api_requires_token_writes_fixture_and_rejects_duplicate(
         self, gated_client: TestClient

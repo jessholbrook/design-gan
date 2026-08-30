@@ -155,12 +155,18 @@ def _evaluator_cases() -> tuple[evaluator_benchmark.BenchmarkCase, ...]:
 
 
 def _review_candidates(
-    *, failed_only: bool = True, limit: int = 100
+    *, mode: str = "balanced", limit: int = 100
 ) -> tuple[evaluator_benchmark.ReviewCandidate, ...]:
+    if mode == "balanced":
+        return evaluator_benchmark.balanced_review_candidates(
+            _store(), captured_cases=_evaluator_cases(), limit=limit
+        )
+    if mode not in {"failures", "all"}:
+        raise HTTPException(422, "mode must be balanced, failures, or all")
     return evaluator_benchmark.review_candidates(
         _store(),
         captured_cases=_evaluator_cases(),
-        failed_only=failed_only,
+        failed_only=mode == "failures",
         limit=limit,
     )
 
@@ -376,20 +382,37 @@ def index() -> str:
 
 
 @app.get("/evaluator-review", response_class=HTMLResponse)
-def evaluator_review(failed_only: bool = True) -> str:
+def evaluator_review(
+    mode: str = "balanced",
+    show_observation: bool = False,
+    failed_only: bool | None = None,
+) -> str:
+    # Preserve old bookmarked filters while making independent review the default.
+    if failed_only is not None:
+        mode = "failures" if failed_only else "all"
     readiness = _corpus_readiness()
-    candidates = _review_candidates(failed_only=failed_only)
+    candidates = _review_candidates(mode=mode)
     cards = []
     for candidate in candidates:
         observed = "PASS" if candidate.observed_pass else "FAIL"
         observed_class = "review-pass" if candidate.observed_pass else "review-fail"
-        errors = (
-            "<ul>"
-            + "".join(f"<li>{html.escape(error)}</li>" for error in candidate.errors)
-            + "</ul>"
-            if candidate.errors
-            else '<p class="muted">No runtime errors recorded.</p>'
-        )
+        if show_observation:
+            errors = (
+                "<ul>"
+                + "".join(f"<li>{html.escape(error)}</li>" for error in candidate.errors)
+                + "</ul>"
+                if candidate.errors
+                else '<p class="muted">No runtime errors recorded.</p>'
+            )
+            observation = (
+                f'<p>Evaluator observed <b class="{observed_class}">{observed}</b> · '
+                f"{candidate.passed_trials}/{candidate.total_trials} trials passed</p>{errors}"
+            )
+        else:
+            observation = (
+                '<p class="review-blind">Evaluator observation and runtime evidence are '
+                "hidden for independent labeling.</p>"
+            )
         captured = ""
         case_id_value = candidate.suggested_case_id
         if case_id_value in candidate.captured_case_ids:
@@ -408,19 +431,29 @@ def evaluator_review(failed_only: bool = True) -> str:
             <button type="button" data-label="fail" class="secondary">Label should fail</button>
           </div>"""
         if candidate.audited_case_ids:
-            case_ids = ", ".join(candidate.audited_case_ids)
-            captured = (
-                '<p class="review-captured">Already captured with review metadata: '
-                f"<code>{html.escape(case_ids)}</code></p>"
-            )
+            if show_observation:
+                case_ids = ", ".join(candidate.audited_case_ids)
+                captured = (
+                    '<p class="review-captured">Already captured with review metadata: '
+                    f"<code>{html.escape(case_ids)}</code></p>"
+                )
+            else:
+                captured = '<p class="review-captured">Already captured and audited.</p>'
             actions = '<p class="muted">This exact run, iteration, and task is already labeled.</p>'
         elif candidate.captured_case_ids:
-            case_ids = ", ".join(candidate.captured_case_ids)
-            captured = (
-                '<p class="review-warning">Legacy fixture lacks review metadata: '
-                f"<code>{html.escape(case_ids)}</code>. Save an audited replacement under "
-                "a new case id.</p>"
-            )
+            if show_observation:
+                case_ids = ", ".join(candidate.captured_case_ids)
+                captured = (
+                    '<p class="review-warning">Legacy fixture lacks review metadata: '
+                    f"<code>{html.escape(case_ids)}</code>. Save an audited replacement under "
+                    "a new case id.</p>"
+                )
+            else:
+                captured = (
+                    '<p class="review-warning">A legacy fixture exists for this outcome but '
+                    "lacks review metadata. Save an audited replacement under the proposed "
+                    "new case id.</p>"
+                )
         task_id_attr = html.escape(candidate.task_id)
         site_url = f"/runs/{candidate.run_id}/iters/{candidate.iteration}/site"
         screenshot_url = f"/runs/{candidate.run_id}/iters/{candidate.iteration}/screenshot"
@@ -437,9 +470,7 @@ def evaluator_review(failed_only: bool = True) -> str:
                   {html.escape(candidate.domain)} · {task_id_attr}</div>
                 <h2>{html.escape(candidate.task_name)}</h2>
                 <p>{html.escape(candidate.task_instruction)}</p>
-                <p>Evaluator observed <b class="{observed_class}">{observed}</b> ·
-                  {candidate.passed_trials}/{candidate.total_trials} trials passed</p>
-                {errors}
+                {observation}
                 <p class="muted">artifact <code>{candidate.artifact_sha256[:12]}</code></p>
                 {captured}
                 <form class="review-form">{actions}
@@ -449,7 +480,7 @@ def evaluator_review(failed_only: bool = True) -> str:
         )
     empty = (
         '<section class="card"><p>No review candidates match this filter. Run a v2 design '
-        "evaluation first, or include successful outcomes.</p></section>"
+        "evaluation first or select a diagnostic queue.</p></section>"
         if not cards
         else ""
     )
@@ -469,24 +500,28 @@ def evaluator_review(failed_only: bool = True) -> str:
         if readiness.blockers
         else "<p>The provenance corpus clears the initial actor-comparison gate.</p>"
     )
-    filter_link = (
-        '<a href="/evaluator-review?failed_only=false">Include successful outcomes</a>'
-        if failed_only
-        else '<a href="/evaluator-review">Show failures only</a>'
+    diagnostic_link = (
+        '<a href="/evaluator-review?mode=balanced&show_observation=true">'
+        "Reveal evaluator diagnostics</a>"
+        if not show_observation
+        else '<a href="/evaluator-review">Return to blinded review</a>'
     )
     body = f"""<main class="review-page">
       <header class="review-head">
         <div><h1>Evaluator review</h1>
-          <p>Inspect the stored artifact, then label whether the frozen task should pass.
-          The evaluator's observed result is context, not the label.</p></div>
-        <div>{filter_link}</div>
+          <p>Inspect the stored artifact, then independently label whether the frozen task
+          should pass. The default policy balances domains and evaluator outcomes without
+          revealing those outcomes during labeling.</p></div>
+        <div class="review-links">{diagnostic_link}</div>
       </header>
       <section class="review-controls">{token_field}
         <label class="review-token">Reviewer id
           <input id="reviewer-id" autocomplete="off" placeholder="Stable operator id" />
         </label>
         <p class="muted">Labels are stored locally with full artifact provenance and are
-        automatically included by benchmark and calibration commands using this corpus.</p>
+        automatically included by benchmark and calibration commands using this corpus.
+        Queue sampling policy v{evaluator_benchmark.REVIEW_SAMPLING_POLICY_VERSION} caps
+        each source run at {evaluator_benchmark.REVIEW_MAX_CANDIDATES_PER_RUN} items.</p>
       </section>
       <section class="card corpus-readiness">
         <h2>Actor-comparison readiness: <span class="{readiness_class}">{readiness_label}</span></h2>
@@ -793,8 +828,43 @@ def api_evaluator_case_candidates(failed_only: bool = True, limit: int = 100) ->
                     f"/runs/{candidate.run_id}/iters/{candidate.iteration}/screenshot"
                 ),
             }
-            for candidate in _review_candidates(failed_only=failed_only, limit=limit)
+            for candidate in _review_candidates(
+                mode="failures" if failed_only else "all", limit=limit
+            )
         ]
+    )
+
+
+@app.get("/api/evaluator-review-queue")
+def api_evaluator_review_queue(limit: int = 100) -> JSONResponse:
+    """List the balanced queue without exposing evaluator observations or HTML."""
+    if not 1 <= limit <= 500:
+        raise HTTPException(422, "limit must be between 1 and 500")
+    items = []
+    for candidate in _review_candidates(mode="balanced", limit=limit):
+        items.append(
+            {
+                "run_id": candidate.run_id,
+                "iteration": candidate.iteration,
+                "task_id": candidate.task_id,
+                "task_name": candidate.task_name,
+                "task_instruction": candidate.task_instruction,
+                "domain": candidate.domain,
+                "artifact_sha256": candidate.artifact_sha256,
+                "suggested_case_id": candidate.suggested_case_id,
+                "site_url": f"/runs/{candidate.run_id}/iters/{candidate.iteration}/site",
+                "screenshot_url": (
+                    f"/runs/{candidate.run_id}/iters/{candidate.iteration}/screenshot"
+                ),
+            }
+        )
+    return JSONResponse(
+        {
+            "sampling_policy_version": evaluator_benchmark.REVIEW_SAMPLING_POLICY_VERSION,
+            "maximum_candidates_per_run": (evaluator_benchmark.REVIEW_MAX_CANDIDATES_PER_RUN),
+            "blinded": True,
+            "items": items,
+        }
     )
 
 

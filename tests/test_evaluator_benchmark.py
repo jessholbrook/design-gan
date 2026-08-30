@@ -11,6 +11,7 @@ from design_gan.evaluator_benchmark import (
     BENCHMARK_CASES,
     BenchmarkCase,
     audit_provenance_corpus,
+    balanced_review_candidates,
     capture_run_case,
     case_review,
     corpus_composition,
@@ -228,6 +229,7 @@ def test_review_candidates_group_trials_prioritize_failures_and_mark_captured(tm
         provenance=captured.provenance,
     )
     legacy_candidates = review_candidates(store, captured_cases=(legacy,))
+    balanced = balanced_review_candidates(store, captured_cases=(captured,))
 
     assert len(failures) == 1
     assert failures[0].observed_pass is False
@@ -239,6 +241,95 @@ def test_review_candidates_group_trials_prioritize_failures_and_mark_captured(tm
     assert [candidate.iteration for candidate in all_outcomes] == [2, 1]
     assert legacy_candidates[0].captured_case_ids == ("legacy-operator-label",)
     assert legacy_candidates[0].audited_case_ids == ()
+    assert [candidate.iteration for candidate in balanced] == [2]
+
+
+def test_balanced_review_candidates_stratify_outcomes_and_domains(tmp_path: Path):
+    store = storage.Storage(tmp_path / "runs.sqlite")
+    expected = []
+    for observed_pass in (False, True):
+        for domain in ADMISSION_DOMAINS:
+            suffix = "pass" if observed_pass else "fail"
+            task = browser_evaluator.BrowserTask(
+                f"{domain}-{suffix}",
+                f"{domain} {suffix}",
+                "Perform the frozen behavior.",
+                behavior="primary-action",
+            )
+            run_id = store.create_run(
+                f"{domain} {suffix}",
+                "model",
+                domain=domain,
+                evaluation_suite=[task.to_dict()],
+                evaluation_plan={"domain": domain, "tasks": [task.to_dict()]},
+            )
+            store.save_iteration(
+                storage.IterationRecord(
+                    run_id=run_id,
+                    iter=1,
+                    html=(
+                        "<!doctype html><html><body><button>"
+                        f"{domain}-{suffix}</button></body></html>"
+                    ),
+                    sus_score=50.0,
+                    axe_penalty=0.0,
+                    composite_score=50.0,
+                    sus_answers=[3] * 10,
+                    feedback="review",
+                    suggestions=[],
+                    artifacts_dir=str(tmp_path),
+                    task_results=[
+                        {
+                            **task.to_dict(),
+                            "task_id": task.id,
+                            "passed": observed_pass,
+                            "trial": 1,
+                        }
+                    ],
+                )
+            )
+            expected.append((domain, observed_pass))
+
+    candidates = balanced_review_candidates(store, limit=6)
+
+    assert [(candidate.domain, candidate.observed_pass) for candidate in candidates] == expected
+
+
+def test_balanced_review_candidates_deduplicate_evidence_and_cap_runs(tmp_path: Path):
+    store = storage.Storage(tmp_path / "runs.sqlite")
+    task = browser_evaluator.BrowserTask(
+        "landing-primary",
+        "Primary action",
+        "Activate the primary action.",
+        behavior="primary-action",
+    )
+    run_id = store.create_run(
+        "Landing page",
+        "model",
+        domain="landing-page",
+        evaluation_suite=[task.to_dict()],
+        evaluation_plan={"domain": "landing-page", "tasks": [task.to_dict()]},
+    )
+    for iteration, label in enumerate(("same", "same", "different"), start=1):
+        store.save_iteration(
+            storage.IterationRecord(
+                run_id=run_id,
+                iter=iteration,
+                html=f"<!doctype html><html><body><button>{label}</button></body></html>",
+                sus_score=50.0,
+                axe_penalty=0.0,
+                composite_score=0.0,
+                sus_answers=[3] * 10,
+                feedback="review",
+                suggestions=[],
+                artifacts_dir=str(tmp_path),
+                task_results=[{**task.to_dict(), "task_id": task.id, "passed": False, "trial": 1}],
+            )
+        )
+
+    candidates = balanced_review_candidates(store, limit=10, max_candidates_per_run=2)
+
+    assert [candidate.iteration for candidate in candidates] == [3, 2]
 
 
 def _admission_cases() -> tuple[BenchmarkCase, ...]:

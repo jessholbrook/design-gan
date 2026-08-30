@@ -205,11 +205,30 @@ All criteria above are met by `codex/product-optimization-roadmap`.
      page expose the same machine-readable blockers. A passing audit permits an
      actor comparison but is not a production-representativeness claim.
 
+## Bias-controlled evidence collection — complete
+
+1. **Balanced candidate sampling**
+   - The default review queue round-robins across the three product domains and
+     evaluator-observed pass/fail strata instead of prioritizing failures.
+   - Sampling policy v1 removes evidence with an audited label, deduplicates
+     identical artifact/task pairs, and caps each source run at four candidates
+     so one optimization trajectory cannot dominate collection.
+   - These strata control candidate selection only. They do not substitute the
+     evaluator result for the operator's independent pass/fail judgment.
+2. **Blinded labeling surface**
+   - `/evaluator-review` hides the evaluator verdict, trial counts, and runtime
+     errors while the reviewer inspects and labels the stored artifact.
+   - `/api/evaluator-review-queue` exposes the same balanced queue without HTML
+     or evaluator observations. The prior candidate API and an explicit viewer
+     reveal remain available for separate diagnostic use.
+   - The run viewer, artifact sandbox, and scrubber remain unchanged.
+
 ## Next research decisions
 
-- Use the review queue during actual design runs to accumulate pass and failure
-  examples; the repository intentionally does not fabricate or check in a
-  private run fixture merely to claim real-run coverage.
+- Use the balanced, blinded review queue during actual design runs to
+  accumulate pass and failure examples; the repository intentionally does not
+  fabricate or check in a private run fixture merely to claim real-run
+  coverage.
 - Reconsider a model actor only if it beats semantic-v4 on the expanded,
   provenance-backed corpus within explicit cost, latency, and repeatability
   budgets.
