@@ -5,9 +5,15 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+import click
 from typer.testing import CliRunner
 
 from design_gan.cli import app
+
+
+def _plain(result) -> str:
+    """Normalize Rich's environment-dependent ANSI styling for assertions."""
+    return click.unstyle(result.output)
 
 
 def test_help_shows_commands():
@@ -26,15 +32,16 @@ def test_help_shows_commands():
         "viewer",
         "export",
     ):
-        assert cmd in r.output
+        assert cmd in _plain(r)
 
 
 def test_run_help_shows_product_evaluation_controls():
     r = CliRunner().invoke(app, ["run", "--help"])
     assert r.exit_code == 0
-    assert "--domain" in r.output
-    assert "--evaluation-trials" in r.output
-    assert "--promotion-alpha" in r.output
+    output = _plain(r)
+    assert "--domain" in output
+    assert "--evaluation-trials" in output
+    assert "--promotion-alpha" in output
 
 
 def test_evaluator_commands_expose_confidence_level():
@@ -42,7 +49,7 @@ def test_evaluator_commands_expose_confidence_level():
     for command in ("benchmark-evaluator", "calibrate-evaluator"):
         result = runner.invoke(app, [command, "--help"])
         assert result.exit_code == 0
-        assert "--confidence" in result.output
+        assert "--confidence" in _plain(result)
 
 
 def test_run_rejects_unknown_product_domain():
