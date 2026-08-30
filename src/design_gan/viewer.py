@@ -144,7 +144,80 @@ def _status_badge(status: str) -> str:
         "errored": "errored",
         "budget_exhausted": "errored",
     }.get(status, "unknown")
+    if status == "running":
+        return (
+            '<span class="status status-running"><span class="status-beacon" '
+            'aria-hidden="true"></span><span>running</span></span>'
+        )
     return f'<span class="status status-{cls}">{html.escape(status)}</span>'
+
+
+_PROGRESS_PHASES = (
+    ("generating", "Generating candidate"),
+    ("rendering", "Rendering in browser"),
+    ("evaluating", "Evaluating frozen tasks"),
+    ("critiquing", "Critiquing the result"),
+)
+
+
+def _progress_state(
+    current_iter: int | None, current_phase: str | None, max_iters: int | None
+) -> dict[str, Any]:
+    """Translate persisted loop progress into an honest display estimate."""
+    phase_ids = [phase for phase, _ in _PROGRESS_PHASES]
+    if not current_iter or current_phase not in phase_ids:
+        max_text = f" of {max_iters}" if max_iters else ""
+        return {
+            "title": "Preparing run",
+            "meta": f"Waiting for iteration 1{max_text}",
+            "percent": 0,
+            "phase_index": -1,
+        }
+    phase_index = phase_ids.index(current_phase)
+    if max_iters:
+        completed = max(0, current_iter - 1) + (phase_index + 1) / len(_PROGRESS_PHASES)
+        percent = min(99, max(1, round(completed / max_iters * 100)))
+        iteration_text = f"Iteration {current_iter} of {max_iters}"
+    else:
+        percent = 0
+        iteration_text = f"Iteration {current_iter}"
+    return {
+        "title": _PROGRESS_PHASES[phase_index][1],
+        "meta": f"{iteration_text} · stage {phase_index + 1} of {len(_PROGRESS_PHASES)}",
+        "percent": percent,
+        "phase_index": phase_index,
+    }
+
+
+def _progress_html(
+    *, running: bool, current_iter: int | None, current_phase: str | None, max_iters: int | None
+) -> str:
+    state = _progress_state(current_iter, current_phase, max_iters)
+    steps = []
+    for index, (phase, label) in enumerate(_PROGRESS_PHASES):
+        step_class = " is-active" if index == state["phase_index"] else ""
+        if 0 <= index < state["phase_index"]:
+            step_class = " is-complete"
+        steps.append(f'<span class="progress-step{step_class}" data-phase="{phase}">{label}</span>')
+    display = "grid" if running else "none"
+    max_iters_value = max_iters or 0
+    percent = state["percent"]
+    aria_text = f"{state['meta']}: {state['title']}"
+    return f"""<section id="progress-indicator" class="run-progress"
+        style="display:{display}" data-max-iters="{max_iters_value}" aria-live="polite">
+      <div class="progress-summary">
+        <span class="progress-activity" aria-hidden="true"><i></i><i></i><i></i></span>
+        <span class="progress-copy"><strong id="progress-title">{state["title"]}</strong>
+          <span id="progress-text">{state["meta"]}</span></span>
+        <b id="progress-percent">{percent}%</b>
+      </div>
+      <div id="progress-track" class="progress-track" role="progressbar"
+        aria-label="Run progress" aria-valuemin="0" aria-valuemax="100"
+        aria-valuenow="{percent}" aria-valuetext="{html.escape(aria_text)}">
+        <span id="progress-bar" style="width:{percent}%"></span>
+      </div>
+      <div id="progress-steps" class="progress-steps">{"".join(steps)}</div>
+    </section>"""
 
 
 def _evaluator_cases() -> tuple[evaluator_benchmark.BenchmarkCase, ...]:
@@ -698,8 +771,12 @@ def run_detail(run_id: int) -> str:
     )
     cur_iter = run.get("current_iter")
     cur_phase = run.get("current_phase")
-    progress_display = "flex" if running and cur_phase else "none"
-    progress_text = f"iter {cur_iter} · {cur_phase}" if (running and cur_iter and cur_phase) else ""
+    progress_html = _progress_html(
+        running=running,
+        current_iter=cur_iter,
+        current_phase=cur_phase,
+        max_iters=run.get("max_iters"),
+    )
     error_html = (
         f'<p class="run-error">Last error: {html.escape(run["error"])}</p>'
         if run.get("error")
@@ -713,13 +790,7 @@ def run_detail(run_id: int) -> str:
   <section class="content">
     <section class="card run-header">
       <div class="run-header-top">
-        <h1>Run #{run_id} {_status_badge(run["status"])}
-          <span id="progress-indicator" class="progress" style="display:{progress_display}">
-            <span class="spinner"></span>
-            <span id="progress-text">{html.escape(progress_text)}</span>
-          </span>
-          {scrub_link}
-        </h1>
+        <h1>Run #{run_id} {_status_badge(run["status"])} {scrub_link}</h1>
         <div class="run-stats">
           <div><span class="muted">best iter</span>
             <b id="stat-best-iter">{run.get("best_iter") or "—"}</b></div>
@@ -731,6 +802,7 @@ def run_detail(run_id: int) -> str:
             <b>{"pass" if run.get("holdout_passed") is True else ("fail" if run.get("holdout_passed") is False else "—")}</b></div>
         </div>
       </div>
+      {progress_html}
       <p class="brief">{html.escape(run["brief"])}</p>
       {suite_html}
       {holdout_html}
@@ -1154,6 +1226,7 @@ async def start_run(
         ),
         domain=plan.domain if plan else None,
         optimization_key=ledger_key,
+        max_iters=req.max_iters,
     )
     entry = (
         orchestrator.run_conversation_loop_sync

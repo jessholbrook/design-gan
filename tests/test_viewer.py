@@ -113,6 +113,24 @@ class TestRunDetail:
         r = client.get("/runs/1")
         assert 'data-running="0"' in r.text
 
+    def test_running_detail_shows_phase_weighted_progress(self, client: TestClient):
+        from design_gan import viewer
+
+        run_id = viewer._store().create_run("Progress demo", "model", max_iters=12)
+        viewer._store().update_progress(run_id, 3, "evaluating")
+
+        page = client.get(f"/runs/{run_id}").text
+
+        assert 'data-running="1"' in page
+        assert 'class="status-beacon"' in page
+        assert 'id="progress-indicator" class="run-progress"' in page
+        assert 'style="display:grid" data-max-iters="12"' in page
+        assert "Evaluating frozen tasks" in page
+        assert "Iteration 3 of 12 · stage 3 of 4" in page
+        assert 'aria-valuenow="23"' in page
+        assert 'id="progress-bar" style="width:23%"' in page
+        assert 'class="progress-step is-active" data-phase="evaluating"' in page
+
 
 class TestScrub:
     def test_run_detail_links_to_scrub(self, client: TestClient):
@@ -172,6 +190,8 @@ class TestStatic:
         r = client.get("/static/style.css")
         assert r.status_code == 200
         assert "iter-card" in r.text
+        assert "progress-wave" in r.text
+        assert "prefers-reduced-motion" in r.text
 
     def test_serves_scrub_js(self, client: TestClient):
         r = client.get("/static/scrub.js")
@@ -191,6 +211,15 @@ class TestStatic:
         assert "querySelector('[data-form-term=\"brief\"]')" in r.text
         assert "briefTerm.textContent" in r.text
         assert "firstChild.nodeValue" not in r.text
+
+    def test_app_js_updates_live_progress_and_reconnect_state(self, client: TestClient):
+        r = client.get("/static/app.js")
+
+        assert r.status_code == 200
+        assert "phaseLabels" in r.text
+        assert "progressBar.style.width" in r.text
+        assert "Reconnecting to live progress" in r.text
+        assert "Starting run" in r.text
 
     def test_static_traversal_rejected(self, client: TestClient):
         # Path traversal via substring check.
@@ -304,6 +333,7 @@ class TestStartRunValidation:
                 "brief": "Collect sales leads",
                 "design_domain": "lead-generation",
                 "evaluation_trials": 8,
+                "max_iters": 12,
                 "promotion_alpha": 0.1,
                 "optimization_key": "product:sales",
             },
@@ -329,6 +359,7 @@ class TestStartRunValidation:
         assert run["evaluation_plan"]["trials_per_task"] == 8
         assert run["evaluation_plan"]["promotion_alpha"] == pytest.approx(0.1)
         assert run["optimization_key"] == "product:sales"
+        assert run["max_iters"] == 12
         assert "product:sales" in client.get(f"/runs/{run_id}").text
 
 

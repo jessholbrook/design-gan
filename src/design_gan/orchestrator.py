@@ -392,6 +392,7 @@ async def _run_shared_loop(
             artifact_policy=(cfg.artifact_policy.to_dict() if kind == KIND_DESIGN else None),
             domain=design_plan.domain if design_plan else None,
             optimization_key=ledger_key,
+            max_iters=cfg.max_iters,
         )
     elif ledger_key is not None:
         existing_run = store.get_run(run_id)

@@ -33,6 +33,7 @@ CREATE TABLE IF NOT EXISTS runs (
     best_iter INTEGER,
     best_score REAL,
     status TEXT NOT NULL DEFAULT 'running',
+    max_iters INTEGER,
     current_iter INTEGER,
     current_phase TEXT,
     current_phase_at REAL,
@@ -171,6 +172,7 @@ class Storage:
         """Add columns added to an existing deployment."""
         run_cols = {row["name"] for row in conn.execute("PRAGMA table_info(runs)")}
         for col, ddl in (
+            ("max_iters", "INTEGER"),
             ("current_iter", "INTEGER"),
             ("current_phase", "TEXT"),
             ("current_phase_at", "REAL"),
@@ -267,6 +269,7 @@ class Storage:
         artifact_policy: dict[str, Any] | None = None,
         domain: str | None = None,
         optimization_key: str | None = None,
+        max_iters: int | None = None,
     ) -> int:
         suite_json = json.dumps(evaluation_suite) if evaluation_suite is not None else None
         plan_json = json.dumps(evaluation_plan) if evaluation_plan is not None else None
@@ -274,8 +277,8 @@ class Storage:
         with self._conn() as c:
             cur = c.execute(
                 "INSERT INTO runs(brief, model, kind, created_at, domain, evaluation_suite, "
-                "evaluation_plan, artifact_policy, optimization_key) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                "evaluation_plan, artifact_policy, optimization_key, max_iters) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 (
                     brief,
                     model,
@@ -286,6 +289,7 @@ class Storage:
                     plan_json,
                     policy_json,
                     optimization_key,
+                    max_iters,
                 ),
             )
             return cur.lastrowid

@@ -65,7 +65,7 @@ class TestInitAndSchema:
     def test_runs_has_progress_columns(self, store: Storage):
         with sqlite3.connect(store.db_path) as c:
             cols = {row[1] for row in c.execute("PRAGMA table_info(runs)").fetchall()}
-        assert {"current_iter", "current_phase", "error"}.issubset(cols)
+        assert {"max_iters", "current_iter", "current_phase", "error"}.issubset(cols)
 
     def test_has_v2_evaluation_columns(self, store: Storage):
         with sqlite3.connect(store.db_path) as c:
@@ -121,6 +121,7 @@ class TestMigration:
         assert "current_iter" in run
         assert "current_phase" in run
         assert "error" in run
+        assert "max_iters" in run
 
     def test_migration_is_idempotent(self, store: Storage):
         # Running Storage() again on the same path must not raise.
@@ -177,6 +178,10 @@ class TestMigration:
 
 
 class TestRuns:
+    def test_iteration_budget_roundtrips(self, store: Storage):
+        rid = store.create_run("b", "m", max_iters=12)
+        assert store.get_run(rid)["max_iters"] == 12
+
     def test_frozen_evaluation_suite_roundtrips(self, store: Storage):
         suite = [{"id": "primary-action", "name": "Primary action works"}]
         rid = store.create_run("b", "m", evaluation_suite=suite)

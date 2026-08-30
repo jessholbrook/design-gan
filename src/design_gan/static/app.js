@@ -71,7 +71,8 @@
     }
     const btn = form.querySelector('button');
     btn.disabled = true;
-    status.textContent = 'starting…';
+    status.classList.add('is-loading');
+    status.textContent = 'Starting run';
     try {
       const res = await fetch('/api/runs', {
         method: 'POST',
@@ -88,6 +89,7 @@
       const { run_id } = await res.json();
       window.location.href = `/runs/${run_id}`;
     } catch (err) {
+      status.classList.remove('is-loading');
       status.textContent = 'error: ' + err.message;
       btn.disabled = false;
     }
@@ -232,15 +234,45 @@
 
   // Live progress indicator helpers.
   const progressEl = document.getElementById('progress-indicator');
+  const progressTitle = document.getElementById('progress-title');
   const progressText = document.getElementById('progress-text');
+  const progressPercent = document.getElementById('progress-percent');
+  const progressTrack = document.getElementById('progress-track');
+  const progressBar = document.getElementById('progress-bar');
+  const progressSteps = Array.from(document.querySelectorAll('.progress-step'));
+  const maxIters = Number(progressEl?.dataset.maxIters) || 0;
+  const phases = ['generating', 'rendering', 'evaluating', 'critiquing'];
+  const phaseLabels = {
+    generating: 'Generating candidate',
+    rendering: 'Rendering in browser',
+    evaluating: 'Evaluating frozen tasks',
+    critiquing: 'Critiquing the result',
+  };
   function setProgress(iter, phase) {
     if (!progressEl) return;
     if (iter && phase) {
-      progressEl.style.display = 'inline-flex';
-      progressText.textContent = `iter ${iter} · ${phase}`;
+      const phaseIndex = Math.max(0, phases.indexOf(phase));
+      const completed = Math.max(0, iter - 1) + (phaseIndex + 1) / phases.length;
+      const percent = maxIters
+        ? Math.min(99, Math.max(1, Math.round((completed / maxIters) * 100)))
+        : 0;
+      const iterationText = maxIters ? `Iteration ${iter} of ${maxIters}` : `Iteration ${iter}`;
+      const meta = `${iterationText} · stage ${phaseIndex + 1} of ${phases.length}`;
+      const title = phaseLabels[phase] || phase;
+      progressEl.style.display = 'grid';
+      progressEl.classList.remove('is-reconnecting');
+      progressTitle.textContent = title;
+      progressText.textContent = meta;
+      progressPercent.textContent = `${percent}%`;
+      progressBar.style.width = `${percent}%`;
+      progressTrack.setAttribute('aria-valuenow', String(percent));
+      progressTrack.setAttribute('aria-valuetext', `${meta}: ${title}`);
+      progressSteps.forEach((step, index) => {
+        step.classList.toggle('is-complete', index < phaseIndex);
+        step.classList.toggle('is-active', index === phaseIndex);
+      });
     } else {
       progressEl.style.display = 'none';
-      progressText.textContent = '';
     }
   }
 
@@ -277,6 +309,11 @@
     es.close();
   });
   es.addEventListener('error', () => {
-    // Connection drop; let the browser auto-reconnect unless the run is done.
+    // EventSource reconnects automatically; make that transient state visible.
+    if (progressEl && es.readyState !== EventSource.CLOSED) {
+      progressEl.classList.add('is-reconnecting');
+      progressTitle.textContent = 'Reconnecting to live progress';
+      progressText.textContent = 'The run continues while the viewer reconnects';
+    }
   });
 })();
