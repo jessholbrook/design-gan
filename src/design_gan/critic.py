@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import base64
 import json
 import re
 from dataclasses import dataclass
@@ -64,7 +65,7 @@ class SUSResponse(BaseModel):
 _BASE_CRITIC_SYSTEM = """You are a __ROLE__ scoring a website on the System Usability Scale.
 
 You will be given:
-- The path to a rendered screenshot of the site. Use the Read tool to view it.
+- An attached rendered screenshot of the site. Inspect it before scoring.
 - A DOM snapshot (may be truncated).
 - An axe-core accessibility report summary.
 
@@ -191,8 +192,8 @@ def _build_user_message(
     items_block = "\n".join(f"{i + 1}. {item}" for i, item in enumerate(SUS_ITEMS))
     return (
         f"Brief the site was built for: {brief}\n\n"
-        f"Screenshot: {screenshot_path}\n"
-        f"Read that PNG with the Read tool before scoring.\n\n"
+        f"Attached screenshot: {screenshot_path.name}\n"
+        f"Inspect the attached image before scoring.\n\n"
         f"SUS items (answer each 1-5 in order):\n{items_block}\n\n"
         f"{_summarize_axe(axe_violations)}\n\n"
         f"DOM snapshot:\n```html\n{_truncate(dom_html, 12000)}\n```"
@@ -200,22 +201,42 @@ def _build_user_message(
 
 
 async def _run_once(
-    model: str, system_prompt: str, user_message: str, screenshot_dir: Path
+    model: str, system_prompt: str, user_message: str, screenshot_path: Path
 ) -> tuple[str, float]:
+    # Supply only the rendered image, not filesystem access. Permission bypass
+    # is unnecessary and is rejected by Claude Code when the host runs as root.
+    screenshot_data = base64.b64encode(screenshot_path.read_bytes()).decode("ascii")
+
+    async def messages():
+        yield {
+            "type": "user",
+            "message": {
+                "role": "user",
+                "content": [
+                    {
+                        "type": "image",
+                        "source": {
+                            "type": "base64",
+                            "media_type": "image/png",
+                            "data": screenshot_data,
+                        },
+                    },
+                    {"type": "text", "text": user_message},
+                ],
+            },
+            "parent_tool_use_id": None,
+            "session_id": "",
+        }
+
     final: str | None = None
     cost_usd: float = 0.0
     async for msg in query(
-        prompt=user_message,
+        prompt=messages(),
         options=ClaudeAgentOptions(
             system_prompt=system_prompt,
             model=model,
-            allowed_tools=["Read"],
-            # Scope the Read tool so it can only see the screenshot's directory.
-            # Combined with bypassPermissions this keeps the critic from
-            # wandering the filesystem if a brief tries to coax it.
-            add_dirs=[str(screenshot_dir)],
-            permission_mode="bypassPermissions",
-            # One Read + one final answer is all we need. Short-circuit runaway loops.
+            tools=[],
+            # Keep the existing turn bound, without exposing any tools.
             max_turns=4,
         ),
     ):
@@ -239,13 +260,12 @@ async def _critique_one(
 ) -> tuple[SUSResponse, float]:
     """Single-critic critique with retry-on-bad-JSON. Returns (response, cost_usd)."""
     user_message = _build_user_message(screenshot_path, dom_html, axe_violations, brief)
-    screenshot_dir = screenshot_path.parent
     system_prompt = profile.system_prompt()
 
     total_cost: float = 0.0
     last_error: Exception | None = None
     for attempt in range(2):
-        raw, cost = await _run_once(model, system_prompt, user_message, screenshot_dir)
+        raw, cost = await _run_once(model, system_prompt, user_message, screenshot_path)
         total_cost += cost
         try:
             payload = _extract_json(raw)
