@@ -683,6 +683,21 @@ def index() -> str:
     body = f"""<main class="layout">
   {_runs_sidebar(None)}
   <section class="content">
+    <header class="card dashboard-intro">
+      <h1>Design-GAN</h1>
+      <p class="intro-lead">Describe a website. Watch AI build, test, and refine it.</p>
+      <p>Design-GAN is an experiment in autonomous design: can AI improve a working
+        website by trying it, evaluating the result, and iterating on feedback?
+        It was built to explore moving beyond a one-shot mockup toward designs
+        that help people complete real tasks.</p>
+      <p>Start with a brief below. An AI generates the page, automated browser tests
+        exercise its key tasks, and an AI critic suggests improvements for the next
+        iteration. Task completion determines which eligible design is kept;
+        accessibility and correctness checks must pass too.</p>
+      <p class="intro-guide">The loop runs automatically. Follow its progress,
+        compare iterations, and try the selected design. No manual labeling is
+        needed to run it.</p>
+    </header>
     {_new_run_form()}
     {recent}
   </section>

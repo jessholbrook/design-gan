@@ -100,6 +100,19 @@ a:hover { text-decoration: underline; }
 .card h1, .card h2 { margin: 0 0 12px; }
 .card h2 { font-size: 16px; }
 
+.dashboard-intro h1 {
+  font-size: clamp(26px, 3vw, 34px);
+  line-height: 1.15;
+  letter-spacing: -0.025em;
+}
+.dashboard-intro p { max-width: 76ch; margin: 0 0 12px; }
+.dashboard-intro .intro-lead { font-size: 18px; font-weight: 500; }
+.dashboard-intro .intro-guide {
+  margin-bottom: 0;
+  padding-top: 12px;
+  border-top: 1px solid var(--border);
+}
+
 /* Evaluator review queue */
 .review-page {
   max-width: 1120px;
