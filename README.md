@@ -1,4 +1,15 @@
-# design-gan
+# Design-GAN
+
+**Describe a website. Watch AI build, test, and refine it.**
+
+[Live application](https://design-gan.fly.dev/) ·
+[Interactive showcase](https://jessholbrook.github.io/design-gan/) ·
+[Technical roadmap](docs/roadmap.md)
+
+Design-GAN explores whether an automated loop can improve a working website
+through task feedback. Give it a brief, choose a product domain, and follow the
+generated candidates as they are tested, critiqued, and refined. No manual
+labeling is required to run the loop.
 
 Autoresearch-style loop that evolves single-page website designs. A
 **generator** produces a site from a short brief; Playwright then replays a
@@ -7,7 +18,47 @@ product-quality score. A **critic** still reports the System Usability Scale
 (SUS) as diagnostic feedback, while axe-core accessibility and browser/runtime
 correctness act as hard promotion guardrails.
 
-![Scrubbing through a v2 run — generated artifact on the left, behavioral evidence, guardrails, and diagnostic feedback on the right.](docs/images/scrubber-single.png)
+![Live Design-GAN dashboard with an introduction to the automatic workflow and controls for starting a run.](docs/images/dashboard-live.png)
+
+*Live dashboard, captured September 7, 2026. Browsing is public; starting runs
+on this deployment requires the owner's shared access token.*
+
+## How it works
+
+1. **Describe the page.** Choose landing-page primary-action, lead-generation
+   form-completion, or storefront add-to-cart tasks.
+2. **Start the loop.** Claude generates standalone HTML, CSS, and JavaScript.
+   Playwright exercises the frozen tasks; axe-core and runtime checks enforce
+   accessibility and correctness. Claude critiques the rendered result.
+3. **Follow the iterations.** The dashboard shows task completion, guardrails,
+   feedback, and promotion decisions as candidates finish. A final holdout audit
+   checks the selected eligible design.
+4. **Inspect the result.** Open a generated page, compare iterations in the
+   scrubber, or export the selected HTML.
+
+Generation and critique use an LLM. Behavioral evaluation uses deterministic
+browser actions. The optional evaluator-review workflow helps audit those
+tests; it is separate from running the automatic design loop.
+
+## A recorded example
+
+In local storefront Run 8, the first travel-mug design completed **0/10**
+development trials and was blocked by accessibility checks. Iteration 2
+completed **10/10**, cleared the promotion guardrails, and scored **100/100** on
+the final holdout audit. It was selected and established an incumbent for that
+product key. A third generation attempt timed out; iteration 2 remained selected.
+
+![Local storefront Run 8 showing task completion, the selected candidate, and the final holdout result.](docs/images/storefront-run.png)
+
+![The storefront scrubber comparing iteration 2 with iteration 1, alongside task evidence and feedback.](docs/images/storefront-compare.png)
+
+*Fresh captures of a real local run, taken September 7, 2026. This history is
+not copied to the live deployment. These are automated browser-test results,
+not measured human usability or conversion gains.*
+
+The scrubber supports a timeline, arrow-key navigation, and **vs prev / vs best**
+comparison with a draggable divider. Conversation runs show transcripts instead
+of page screenshots.
 
 ## Architecture
 
@@ -79,18 +130,24 @@ Moving development to another machine? Start with the checked-in
 remaining evaluator work.
 
 ```bash
-pip install -e .
-playwright install chromium
-cp .env.example .env  # add your ANTHROPIC_API_KEY
+git clone https://github.com/jessholbrook/design-gan.git
+cd design-gan
+python3 -m venv .venv  # Python 3.11 or newer
+source .venv/bin/activate
+python -m pip install -e ".[dev]"
+python -m playwright install chromium
+cp .env.example .env
 ```
+
+Set `ANTHROPIC_API_KEY` in `.env`. For local use, the CLI can also use an
+authenticated Claude Code session when no API key is set; run `claude auth login`
+if you already use Claude Code. The live Fly deployment uses its configured secrets.
 
 ## Usage
 
 ```bash
 # Launch the web UI: kick off runs, watch them live, browse history
 design-gan viewer  # http://127.0.0.1:8000
-# Review a balanced sample and save provenance-backed labels in the browser:
-# http://127.0.0.1:8000/evaluator-review
 
 # Or run one evolution loop from the terminal
 design-gan run "A landing page for a weekend cycling tour in rural Vermont."
@@ -98,14 +155,6 @@ design-gan run "Collect demo requests for a B2B analytics product." \
   --domain lead-generation --evaluation-trials 8 --promotion-alpha 0.05
 design-gan run "A single-product storefront for a lightweight travel mug." \
   --domain storefront --optimization-key travel-mug
-design-gan benchmark-evaluator --confidence 0.95
-design-gan calibrate-evaluator --repetitions 3 --confidence 0.95
-# Capture an operator-labeled generated case, then include captured cases
-design-gan capture-evaluator-case 12 3 --task-id landing-primary-desktop \
-  --case-id run-12-primary-failure --label fail --reviewer operator-1 \
-  --rationale "The primary action does not produce a meaningful response."
-design-gan audit-evaluator-corpus
-design-gan benchmark-evaluator --case-dir runs/evaluator-corpus
 design-gan list-runs
 design-gan list-incumbents
 
@@ -118,11 +167,20 @@ per-iteration cards (screenshot, task score, promotion gates, diagnostic SUS,
 feedback, and suggestions). If you start a run from the browser it streams new iterations in via SSE as
 they complete — you can literally watch the site evolve.
 
-The **Evaluator review** page prioritizes failed task outcomes from stored v2
-design runs. An operator opens the exact artifact in its existing sandbox,
+Keep the viewer process running while using localhost. If the page says
+"connection refused," restart it from the repository. If the editable command
+cannot find the package, use `PYTHONPATH=src .venv/bin/design-gan viewer`.
+Local `.env` secrets and `runs/` data are not stored in Git or uploaded by deployment.
+
+## Optional evaluator auditing
+
+The automatic loop works without human labels. For research into evaluator
+validity, `/evaluator-review` offers a balanced sample of domains and observed
+outcomes, with evaluator diagnostics hidden by default. An operator opens the
+exact artifact in its existing sandbox,
 decides whether the frozen task should pass, and saves that label into the local
-`runs/evaluator-corpus` directory. The JSON queue exposes task evidence,
-artifact hashes, and provenance but never generated HTML. Label writes reuse
+`runs/evaluator-corpus` directory. The default JSON queue includes task instructions,
+artifact hashes, and provenance, but hides evaluator outcomes. Label writes reuse
 `DESIGN_GAN_START_TOKEN` when that deployment gate is configured; reading run
 history remains open.
 
@@ -135,49 +193,41 @@ run. Duplicate run/task provenance and duplicate artifact/task evidence do not
 qualify. Passing this initial coverage gate permits a comparison; it does not
 claim that the reviewed corpus represents production traffic.
 
-![V2 run page — task completion over iterations and structured evaluation cards.](docs/images/run-page.png)
-
-Each run page has a **Scrub ▸** link to a dedicated scrubber: a timeline
-slider with the screenshot on the left and the critic's verdict on the
-right, updating as you drag (arrow keys work too). A **vs prev / vs best**
-toggle overlays two iterations behind a draggable divider so you can see
-exactly what changed, and each iteration surfaces the prior critic's
-suggestions that produced it. Conversation runs scrub through transcripts
-instead of screenshots.
-
-![Scrubber compare mode — the latest candidate versus its parent behind a draggable divider.](docs/images/scrubber-compare.png)
+```bash
+design-gan benchmark-evaluator --confidence 0.95
+design-gan calibrate-evaluator --repetitions 3 --confidence 0.95
+# Example: replace the run, iteration, task, and label with your own review.
+design-gan capture-evaluator-case 12 3 --task-id landing-primary-desktop \
+  --case-id run-12-primary-failure --label fail --reviewer operator-1 \
+  --rationale "The primary action does not produce a meaningful response."
+design-gan audit-evaluator-corpus
+design-gan benchmark-evaluator --case-dir runs/evaluator-corpus
+```
 
 ## Deploy to Fly.io
 
 A `Dockerfile` and `fly.toml` are included. The Dockerfile bakes in Chromium
 plus its Linux deps; runs persist to a mounted volume at `/data`.
 
-One-time setup (from the repo root, with [flyctl](https://fly.io/docs/flyctl/)
-installed and logged in):
+The existing live app is [`design-gan`](https://design-gan.fly.dev/), in `iad`.
+Its persistent volume is named `data` and mounted at `/data`. **Do not recreate
+or rename that volume when redeploying.** With [flyctl](https://fly.io/docs/flyctl/)
+installed and authenticated as an app operator:
 
 ```bash
-# Claim an app name — edit fly.toml if the default is taken.
-fly launch --no-deploy --copy-config
-
-# Create the 1GB volume that backs SQLite + runs/ in the same region.
-fly volumes create design_gan_data --size 1 --region iad
-
-# Set your Anthropic key.
-fly secrets set ANTHROPIC_API_KEY=sk-ant-...
-
-# Deploy.
-fly deploy
+fly status --app design-gan
+fly deploy --app design-gan --remote-only
+fly logs --app design-gan
 ```
 
-Once it's up:
+For a separate deployment, choose your own app name in `fly.toml`, create a
+volume named `data` in the configured region, and configure `ANTHROPIC_API_KEY`
+through Fly secrets. `DESIGN_GAN_START_TOKEN` gates run starts and label writes;
+`DESIGN_GAN_DAILY_BUDGET_USD` sets a rolling 24-hour spending cap. Browsing stays
+open. Never commit these secret values.
 
-```bash
-# Seed the demo run so the dashboard isn't empty.
-fly ssh console -C "design-gan demo"
-
-# Tail logs while you try a real run from the web UI.
-fly logs
-```
+Deployments update application code while preserving the existing live database
+and artifacts. They do not merge local experiment history into the live app.
 
 If you hit OOM kills during renders, bump `[[vm]] memory = "2gb"` in `fly.toml`
 and `fly deploy` again.
@@ -195,11 +245,13 @@ Hand-edit the file directly; commit; GitHub Pages publishes in a minute at
 ## Tests
 
 ```bash
-pip install -e ".[dev]"
-pytest
+python -m pip install -e ".[dev]"
+python -m pytest -q
+python -m ruff check src tests
 ```
 
-294 tests covering the browser-evaluator and artifact contracts, primary
+The September 7, 2026 release passed all 294 tests and lint. Coverage includes
+the browser-evaluator and artifact contracts, primary
 scoring, paired promotion decisions, storage (schema + migration), the extractor
 helpers, the orchestrator loop (with generator/critic/renderer faked), the
 viewer's HTTP endpoints (including the scrubber and evaluator review routes),
