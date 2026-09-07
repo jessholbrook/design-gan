@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width,initial-scale=1" />
-  <title>design-gan — a dual-agent loop that evolves website and conversation designs</title>
+  <title>design-gan — describe a website, watch AI build, test, and refine it</title>
   <meta name="description" content="An autoresearch-style product-optimization loop for single-page websites: frozen browser tasks are the primary metric, SUS is diagnostic feedback, and accessibility and correctness are hard promotion guardrails." />
   <style>
     :root {
@@ -38,7 +38,7 @@
     .container { max-width: 960px; margin: 0 auto; padding: 48px 24px; }
 
     /* Hero */
-    .hero { padding-bottom: 32px; border-bottom: 1px solid var(--border); }
+    .hero { padding-bottom: 32px; }
     .kicker {
       color: var(--muted);
       letter-spacing: 0.16em;
@@ -418,6 +418,20 @@
       border: 1px solid var(--border); border-radius: 10px;
     }
     .shot-caption { margin: 0; color: var(--muted); font-size: 13px; }
+    .showcase-shot { margin: 24px 0; }
+    .showcase-shot figcaption { color: var(--muted); font-size: 14px; }
+    .showcase-shot img { height: auto; }
+    .live-comparison {
+      display: grid; grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 20px; margin: 24px 0;
+    }
+    .live-comparison figure { margin: 0; min-width: 0; }
+    .live-comparison .viewer-shot { margin-top: 0; }
+    .live-comparison figcaption { font-size: 14px; color: var(--muted); }
+    .snapshot-date { margin-top: 16px; font-size: 14px; color: var(--muted); }
+    @media (max-width: 600px) {
+      .live-comparison { grid-template-columns: 1fr; }
+    }
     .v2-metrics {
       display: grid; grid-template-columns: repeat(4, minmax(0, 1fr));
       gap: 12px; margin: 24px 0;
@@ -462,38 +476,39 @@
   <div class="container">
     <section class="hero">
       <span class="kicker">A General Purpose Research Experiment · autoresearch × design</span>
-      <h1>Auto improving websites and conversations with agents.</h1>
+      <h1>Describe a website.<br>Watch AI build, test, and refine it.</h1>
       <p class="lede">
-        <strong>design-gan</strong> is a dual-agent loop: a <em>generator</em>
-        writes a single-page website from a brief, frozen browser tasks measure
-        whether it actually works, and the feedback rolls forward into the next
-        draft. SUS remains diagnostic; accessibility and correctness decide
-        whether a higher task score is safe to promote.
+        <strong>design-gan</strong> explores automated product optimization,
+        not just better models. Give it a brief and one measurable task.
+        Agents generate and critique a working page, a browser tests it, and
+        the results guide the next version. No manual labeling is required
+        to run the loop.
       </p>
       <div class="actions">
         <a class="btn primary" href="https://design-gan.fly.dev/">Try the live app &rarr;</a>
         <a class="btn" href="https://github.com/jessholbrook/design-gan">View on GitHub</a>
-        <a class="btn" href="#v2-run">Skip to the run</a>
+        <a class="btn" href="#live-run">See the verified live run</a>
       </div>
 
       <div class="stats">
         <div class="stat">
-          <div class="stat-label">Candidate task score</div>
-          <div class="stat-value good">100</div>
+          <div class="stat-label">Live run #7 · before</div>
+          <div class="stat-value">0 / 10</div>
         </div>
         <div class="stat">
-          <div class="stat-label">Prior task score</div>
-          <div class="stat-value">0</div>
+          <div class="stat-label">After one revision</div>
+          <div class="stat-value good">10 / 10</div>
         </div>
         <div class="stat">
-          <div class="stat-label">Repeated trials</div>
-          <div class="stat-value good">10</div>
+          <div class="stat-label">Final holdout</div>
+          <div class="stat-value good">100%</div>
         </div>
         <div class="stat">
           <div class="stat-label">Promotion</div>
-          <div class="stat-value">blocked</div>
+          <div class="stat-value good">passed</div>
         </div>
       </div>
+      <p class="snapshot-date">Verified September 7, 2026 · automated browser-task results, not human conversion gains.</p>
     </section>
 
     <section id="the-idea">
@@ -501,10 +516,11 @@
       <p class="lead">
         Inspired by Andrej Karpathy's
         <a href="https://github.com/karpathy/autoresearch">autoresearch</a> —
-        a single agent autonomously evolving an LLM training script against a
-        deterministic loss. This experiment takes the same autonomous-loop
-        paradigm and applies it to artifacts that <em>don't</em> have a clean
-        numeric metric: single-page websites and short conversations.
+        an autonomous loop that improves a training script against a fixed
+        evaluation. This experiment asks where the same approach can help
+        improve a product experience: start with a surface we can change,
+        decide what users should be able to accomplish, and measure that task
+        consistently as the design evolves.
       </p>
       <p>
         Two main differences remain. First, we split the work into a
@@ -527,6 +543,39 @@
         next generator call. A candidate is promoted only when its paired task
         evidence clears the configured effect and significance thresholds and
         every artifact, accessibility, and correctness guardrail passes.
+      </p>
+    </section>
+
+    <section id="automatic-workflow">
+      <h2>From brief to a tested page</h2>
+      <p>
+        Start in the live dashboard with a brief and a product domain:
+        a landing page with a working primary action, a lead-generation page
+        with a completable form, or a storefront with a working add-to-cart
+        flow. Set an iteration limit and start the run. Generation, rendering,
+        repeated browser tests, accessibility checks, critique, and refinement
+        then happen automatically.
+      </p>
+      <p>
+        Follow each candidate's task results, guardrails, and feedback in the
+        run viewer. Open the generated page or use the scrubber to compare
+        versions. The final eligible design gets an untouched holdout audit.
+        Browsing the live app is public; starting a run requires the owner's
+        shared access token and uses the deployment's API budget.
+      </p>
+      <figure class="showcase-shot">
+        <a href="https://design-gan.fly.dev/">
+          <img class="viewer-shot" src="images/dashboard-live.png" loading="lazy"
+               alt="Design-GAN dashboard explaining the automatic workflow above the brief, domain, and run controls." />
+        </a>
+        <figcaption>Live dashboard captured September 7, 2026. This is a saved screenshot; the live app contains the current run history.</figcaption>
+      </figure>
+      <p>
+        Human labeling is optional evaluator auditing, not a step in the
+        automatic loop. The evaluator-review screen helps independently check
+        whether the frozen tests are measuring what they claim. A passing
+        automated test is evidence about that test, not a substitute for
+        research with people.
       </p>
     </section>
 
@@ -553,14 +602,62 @@
       </p>
     </section>
 
+    <section id="live-run">
+      <h2>A verified run on the live app</h2>
+      <p class="lead">A weekend walking-tour landing page, with a working booking dialog.</p>
+      <p>
+        On September 7, 2026, <a href="https://design-gan.fly.dev/runs/7">live Run #7</a>
+        completed two iterations without a runtime error. The first candidate
+        passed none of the ten development trials: activating &ldquo;Book a
+        Walk&rdquo; produced no observable response. After feedback, iteration 2
+        passed all five pointer trials and all five keyboard trials.
+      </p>
+      <p>
+        The revision cleared accessibility, runtime-correctness, and artifact
+        guardrails and was promoted for a statistically significant task-score
+        improvement. It then scored 100% on the final holdout and became the
+        selected design. The run recorded $0.82 in API cost, rounded from
+        $0.818647. Its &ldquo;exhausted&rdquo; status means it reached the configured
+        two-iteration limit, not that it errored.
+      </p>
+      <div class="live-comparison">
+        <figure>
+          <a href="https://design-gan.fly.dev/runs/7/iters/1/site">
+            <img class="viewer-shot" src="images/live-run-7-iter-1.png" loading="lazy"
+                 width="1280" height="800"
+                 alt="First generated walking-tour page, whose booking action failed all ten development trials." />
+          </a>
+          <figcaption>Iteration 1: 0/10 tasks passed. Visual polish alone did not make the booking action work.</figcaption>
+        </figure>
+        <figure>
+          <a href="https://design-gan.fly.dev/runs/7/iters/2/site">
+            <img class="viewer-shot" src="images/live-run-7-iter-2.png" loading="lazy"
+                 width="1280" height="800"
+                 alt="Revised walking-tour page with clearer pricing and a booking action that passed all ten development trials." />
+          </a>
+          <figcaption>Iteration 2: 10/10 tasks passed, all promotion guardrails cleared, and the final holdout passed.</figcaption>
+        </figure>
+      </div>
+      <p class="shot-caption">
+        Original browser-rendered screenshots from live Run #7. The walking-tour
+        business, offers, and social-proof claims are generated demo content,
+        not verified real-world facts. These results demonstrate one automated
+        loop; they do not establish human usability or conversion improvements.
+      </p>
+      <p style="margin-top: 20px;">
+        <a href="https://design-gan.fly.dev/runs/7">Inspect the full task evidence and critic feedback &rarr;</a>
+        &nbsp; <a href="https://design-gan.fly.dev/runs/7/scrub">Compare the iterations &rarr;</a>
+      </p>
+    </section>
+
     <section id="v2-run">
-      <h2>A current v2 run</h2>
+      <h2>An earlier run: when a better score isn't enough</h2>
       <p class="lead">
         Brief: &ldquo;A landing page for a cycling tour company in Vermont.&rdquo;
       </p>
       <p>
-        This short local verification run is deliberately more useful than a
-        clean success story. The first recorded candidate did not respond to
+        This earlier local verification run shows why promotion guardrails
+        matter. The first recorded candidate did not respond to
         either pointer or keyboard activation. The next candidate made the
         primary action work in every repeated trial, but was still rejected:
         four serious colour-contrast failures tripped the accessibility
@@ -602,8 +699,8 @@
         <img class="viewer-shot" src="images/run-page.png"
              alt="Design-GAN v2 run page showing task score, repeated trials, SUS diagnostic feedback, guardrails, and rejected promotion decisions." />
         <p class="shot-caption">
-          The refreshed run viewer keeps every candidate in history and exposes
-          task evidence, diagnostics, guardrails, and the final decision side by side.
+          Historical local run, separate from live Run #7. The viewer keeps
+          rejected candidates alongside their task evidence and guardrail failures.
         </p>
       </div>
     </section>
@@ -774,11 +871,11 @@
     </section>
 
     <section id="the-convo-run">
-      <h2>Now the same loop, for conversations</h2>
+      <h2>The conversation experiment</h2>
       <p class="lead">
         <strong>design-gan</strong> isn't about websites — it's about treating any
         generated artifact as something you can evolve under critique. The second
-        half of the system runs the identical loop over <em>conversations</em>:
+        half of the system runs a related generation-and-critique loop over <em>conversations</em>:
         a user simulator plays a person with a goal, the assistant replies over
         up to five turns, and the critic scores the whole transcript on a
         parallel Conversation Usability Scale (CUS).
@@ -1152,8 +1249,12 @@ Go. Start the timer as soon as this window closes.</div></div><div class="bubble
         you can browse prior runs without anything, and start your own if you have the
         shared access token (ask the owner). Or run the whole loop locally:
       </p>
-      <pre><code>pip install -e .
-playwright install chromium
+      <pre><code>git clone https://github.com/jessholbrook/design-gan.git
+cd design-gan
+python3 -m venv .venv  # Python 3.11 or newer
+source .venv/bin/activate
+python -m pip install -e ".[dev]"
+python -m playwright install chromium
 cp .env.example .env  # add your ANTHROPIC_API_KEY
 
 # Web UI — kick off runs, watch them stream in live
@@ -1164,6 +1265,12 @@ design-gan run "A landing page for a weekend cycling tour in rural Vermont."
 
 # The conversation loop, for evolving an assistant against a goal
 design-gan converse "I keep procrastinating on writing my thesis. How do I actually start?"</code></pre>
+      <p>
+        Generation and critique need working Claude authentication. The hosted
+        app uses an Anthropic API key with available API credits;
+        <a href="https://support.claude.com/en/articles/9876003-i-have-a-paid-claude-subscription-pro-max-team-or-enterprise-plans-why-do-i-have-to-pay-separately-to-use-the-claude-api-and-console">API billing is separate from a Claude chat subscription</a>. Keep local API keys
+        in your untracked <code>.env</code>, never in the repository.
+      </p>
       <p>
         Source, setup details, and the Fly.io deploy config are in the
         <a href="https://github.com/jessholbrook/design-gan">GitHub repository</a>.
@@ -1291,12 +1398,14 @@ design-gan converse "I keep procrastinating on writing my thesis. How do I actua
     <footer>
       <p>
         An autoresearch-style experiment. Generator, critic, and user
-        simulator are Claude models. The current v2 viewer snapshot and the
-        preserved v1 design and conversation traces are real executions against
+        simulator are Claude models. The live Run #7 screenshots, earlier local
+        v2 viewer snapshot, and preserved v1 design and conversation traces are real executions against
         the stated briefs. The historical screenshots, transcripts, SUS/CUS
         answers, feedback lines, and suggestions remain verbatim from those runs.
         <a href="https://github.com/jessholbrook/design-gan">Source on GitHub</a>.
       </p>
+      <p>Showcase refreshed September 7, 2026. The <a href="https://design-gan.fly.dev/">live app</a>
+        has the current run history; this page is a recorded project overview.</p>
     </footer>
   </div>
   <script>
